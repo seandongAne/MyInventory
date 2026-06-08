@@ -58,11 +58,14 @@ struct ContentView: View {
         }
         .task {
             seedContexts()
-            if selectedContext == nil { selectedContext = contexts.first }
+            if isUITesting { seedUITestSample() }
+            // Under UI testing, stay on the sidebar so the global search is reachable
+            // at launch; in production, jump straight into the first context.
+            if selectedContext == nil && !isUITesting { selectedContext = contexts.first }
             await refreshNotifications()
         }
         .onChange(of: contexts) { _, newValue in
-            if selectedContext == nil { selectedContext = newValue.first }
+            if selectedContext == nil && !isUITesting { selectedContext = newValue.first }
         }
         .onChange(of: selectedContext) { _, _ in
             selectedItem = nil   // item from another context no longer applies
@@ -191,6 +194,16 @@ struct ContentView: View {
         } catch {
             seedError = error.localizedDescription
         }
+    }
+
+    // MARK: UI-test support
+
+    private var isUITesting: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uiTesting")
+    }
+
+    private func seedUITestSample() {
+        try? SeedData.seedUITestSampleIfNeeded(in: modelContext)
     }
 
     // MARK: Notifications

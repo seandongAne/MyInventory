@@ -28,6 +28,34 @@ enum SeedData {
         try context.save()
     }
 
+    /// Deterministic sample data for UI tests (guarded by the `-uiTesting` launch
+    /// argument). Adds one item to two different contexts so the cross-context
+    /// global search can be exercised end-to-end. Idempotent.
+    @MainActor
+    static func seedUITestSampleIfNeeded(in context: ModelContext) throws {
+        guard try context.fetchCount(FetchDescriptor<SupplyItem>()) == 0 else { return }
+        let contexts = try context.fetch(FetchDescriptor<SupplyContext>())
+        func named(_ name: String) -> SupplyContext? { contexts.first { $0.name == name } }
+
+        if let vehicle = named("Vehicle") {
+            let cat = SupplyCategory(name: "Emergency Kit", sortOrder: 0)
+            cat.context = vehicle
+            context.insert(cat)
+            let item = SupplyItem(name: "First Aid Kit", checkIntervalMonths: 6)
+            item.category = cat
+            context.insert(item)
+        }
+        if let house = named("House") {
+            let cat = SupplyCategory(name: "Pantry", sortOrder: 0)
+            cat.context = house
+            context.insert(cat)
+            let item = SupplyItem(name: "Canned Tuna", checkIntervalMonths: 12)
+            item.category = cat
+            context.insert(item)
+        }
+        try context.save()
+    }
+
     /// SF Symbol for a context, matched by name (Dev Plan §6.3). Falls back to a
     /// generic symbol for any future user-created context.
     static func symbol(forContextNamed name: String) -> String {

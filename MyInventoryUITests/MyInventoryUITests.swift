@@ -2,7 +2,11 @@
 //  MyInventoryUITests.swift
 //  MyInventoryUITests
 //
-//  Created by Sean Dong on 2026-06-08.
+//  End-to-end UI coverage: launch state, the cross-context global search, and
+//  context drill-down. Every test launches the app with `-uiTesting`, which makes
+//  it use a throwaway in-memory store seeded with deterministic sample data
+//  (SeedData.seedUITestSampleIfNeeded) and stay on the sidebar — so each run starts
+//  from a known state and never touches the user's real data.
 //
 
 import XCTest
@@ -10,34 +14,61 @@ import XCTest
 final class MyInventoryUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
-    }
-
-    @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    private func launchApp() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting"]
         app.launch()
-
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        return app
     }
 
+    /// The app launches onto the sidebar showing the three seeded contexts and the
+    /// app-wide search field.
     @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+    func testLaunchShowsContextsAndGlobalSearch() throws {
+        let app = launchApp()
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Bag"].exists)
+        XCTAssertTrue(app.staticTexts["House"].exists)
+        XCTAssertTrue(app.searchFields["Search all supplies"].exists)
+    }
+
+    /// The headline feature: a sidebar search finds an item that lives in a
+    /// *different* context and tapping it opens that item's detail.
+    @MainActor
+    func testGlobalSearchFindsItemAcrossContexts() throws {
+        let app = launchApp()
+
+        let search = app.searchFields["Search all supplies"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10))
+        search.tap()
+        search.typeText("tuna")
+
+        // "Canned Tuna" is seeded under House — it must surface from the sidebar.
+        let result = app.staticTexts["Canned Tuna"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        result.tap()
+
+        // Tapping the result opens the item's detail (its title is the item name).
+        XCTAssertTrue(app.navigationBars["Canned Tuna"].waitForExistence(timeout: 5))
+    }
+
+    /// Selecting a context shows that context's items in the content column.
+    @MainActor
+    func testContextListShowsSeededItem() throws {
+        let app = launchApp()
+
+        let vehicle = app.staticTexts["Vehicle"]
+        XCTAssertTrue(vehicle.waitForExistence(timeout: 10))
+        vehicle.tap()
+
+        // The item card combines its accessibility into one label
+        // ("First Aid Kit, <status>"), so match on a substring.
+        let card = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", "First Aid Kit"))
+            .firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
     }
 }

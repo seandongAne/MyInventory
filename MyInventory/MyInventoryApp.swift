@@ -26,9 +26,12 @@ struct MyInventoryApp: App {
             SupplyItem.self,
             CheckRecord.self
         ])
+        // UI tests launch with `-uiTesting` → use a throwaway in-memory store so each
+        // run starts clean and never touches the user's real on-disk data.
+        let isUITesting = ProcessInfo.processInfo.arguments.contains("-uiTesting")
         let configuration = ModelConfiguration(
             schema: schema,
-            isStoredInMemoryOnly: false
+            isStoredInMemoryOnly: isUITesting
             // M6: add `, cloudKitDatabase: .automatic` here (and the iCloud entitlement)
             // once the schema is stable. Keep local-only until then.
         )
