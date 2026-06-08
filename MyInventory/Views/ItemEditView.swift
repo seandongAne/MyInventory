@@ -326,6 +326,8 @@ struct ItemEditView: View {
             try modelContext.save()
             selectedCategory = category
         } catch {
+            // Discard the pending insert so it can't be flushed later or duplicated (P1).
+            modelContext.rollback()
             saveError = error.localizedDescription
         }
         newCategoryName = ""
@@ -362,6 +364,9 @@ struct ItemEditView: View {
             do {
                 try modelContext.save()
             } catch {
+                // Revert the in-memory edits so the object can't diverge from the
+                // store while showing the error (P1-c).
+                modelContext.rollback()
                 saveError = error.localizedDescription
                 return
             }
@@ -372,14 +377,12 @@ struct ItemEditView: View {
     }
 
     private func requestAuthAndReschedule(intervalSet: Bool) {
-        let lead = settings.globalLeadTimeDays
         Task {
             if intervalSet && !settings.notificationsRequested {
                 settings.notificationsRequested = true
                 _ = await notifications.requestAuthorization()
             }
-            let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-            await notifications.reschedule(items: items, globalLeadTimeDays: lead)
+            notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
         }
     }
 }

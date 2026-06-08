@@ -63,7 +63,7 @@ struct ItemCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .strokeBorder(status.style.color.opacity(status == .overdue ? 0.35 : 0), lineWidth: 1)
+                .strokeBorder(status.style.color.opacity(status == .overdue || status == .needsAttention ? 0.35 : 0), lineWidth: 1)
         )
         .shadow(color: Theme.cardShadowColor, radius: Theme.cardShadowRadius, y: Theme.cardShadowY)
         .contentShape(Rectangle())
@@ -91,9 +91,10 @@ struct ItemCard: View {
 
     private var surfaceTint: Color {
         switch status {
-        case .overdue:  Theme.statusOverdue.opacity(0.06)
-        case .dueSoon:  Theme.statusDueSoon.opacity(0.05)
-        default:        Theme.cardSurface
+        case .overdue:        Theme.statusOverdue.opacity(0.06)
+        case .needsAttention: Theme.statusNeedsAttention.opacity(0.06)
+        case .dueSoon:        Theme.statusDueSoon.opacity(0.05)
+        default:              Theme.cardSurface
         }
     }
 }

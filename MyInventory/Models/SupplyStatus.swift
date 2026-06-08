@@ -7,13 +7,13 @@
 //
 
 import Foundation
-import SwiftUI
 
 enum SupplyStatus: Hashable {
     case neverExpires
     case neverChecked
     case ok
     case dueSoon
+    case needsAttention   // last check was flagged "Needs attention" (and item isn't overdue)
     case overdue
 }
 
@@ -34,14 +34,28 @@ extension SupplyItem {
     func status(leadTimeDays globalLead: Int,
                 now: Date = .now,
                 calendar: Calendar = .current) -> SupplyStatus {
-        guard checkIntervalMonths != nil else { return .neverExpires }
-        guard lastCheck != nil, let due = nextDueDate(calendar: calendar) else {
-            return .neverChecked   // PRD Q1 default: treat as due immediately
+        let lastResult = lastCheck?.result
+
+        // 1) Time-based overdue always wins — a stale item needs a re-check regardless
+        //    of what the last check said. (Decision: Overdue > needsAttention.)
+        if let due = nextDueDate(calendar: calendar), now >= due {
+            return .overdue
         }
+        // 2) Explicit human flag from the most recent check pins the item above
+        //    due-soon/OK — and even surfaces on never-expires items (P1-a: the
+        //    recorded result must not be silently ignored).
+        if lastResult == .needsAttention {
+            return .needsAttention
+        }
+        // 3) No interval => never expires.
+        guard checkIntervalMonths != nil else { return .neverExpires }
+        // 4) Interval but never checked => due immediately (PRD Q1 default).
+        guard let due = nextDueDate(calendar: calendar) else { return .neverChecked }
+        // 5) Inside the lead-time window => due soon.
         let lead = effectiveLeadTimeDays(globalLead: globalLead)
-        guard let warnDate = calendar.date(byAdding: .day, value: -lead, to: due) else { return .ok }
-        if now >= due { return .overdue }
-        if now >= warnDate { return .dueSoon }
+        if let warnDate = calendar.date(byAdding: .day, value: -lead, to: due), now >= warnDate {
+            return .dueSoon
+        }
         return .ok
     }
 
@@ -63,6 +77,8 @@ extension SupplyItem {
             return "No expiry"
         case .neverChecked:
             return "Needs first check"
+        case .needsAttention:
+            return "Flagged at last check"
         case .ok:
             if let due = nextDueDate(calendar: calendar) {
                 return "Due " + due.formatted(date: .abbreviated, time: .omitted)
@@ -84,50 +100,24 @@ extension SupplyItem {
 }
 
 extension SupplyStatus {
-    /// Sort weight so overdue/never-checked float to the top of any list.
+    /// Sort weight so overdue/attention/never-checked float to the top of any list.
     var sortPriority: Int {
         switch self {
         case .overdue: return 0
-        case .neverChecked: return 1
-        case .dueSoon: return 2
-        case .ok: return 3
-        case .neverExpires: return 4
+        case .needsAttention: return 1
+        case .neverChecked: return 2
+        case .dueSoon: return 3
+        case .ok: return 4
+        case .neverExpires: return 5
         }
     }
 
-    var color: Color {
-        switch self {
-        case .overdue: return .red
-        case .neverChecked: return .red
-        case .dueSoon: return .orange
-        case .ok: return .green
-        case .neverExpires: return .secondary
-        }
-    }
+    // Visual mapping (color / symbol / label) lives in one place only:
+    // `SupplyStatus.style` (DesignSystem/SupplyStatusStyle.swift). Don't reintroduce
+    // a parallel palette here.
 
-    var systemImage: String {
-        switch self {
-        case .overdue: return "exclamationmark.circle.fill"
-        case .neverChecked: return "questionmark.circle"
-        case .dueSoon: return "clock.badge.exclamationmark"
-        case .ok: return "checkmark.circle"
-        case .neverExpires: return "infinity"
-        }
-    }
-
-    /// Short label for badges (date-aware variants are built in StatusBadge).
-    var shortLabel: String {
-        switch self {
-        case .overdue: return "Overdue"
-        case .neverChecked: return "Needs first check"
-        case .dueSoon: return "Due soon"
-        case .ok: return "OK"
-        case .neverExpires: return "No expiry"
-        }
-    }
-
-    /// Whether overdue/needs-attention rows get the highlighted treatment.
+    /// Whether overdue/attention/never-checked rows get the highlighted treatment.
     var isAttention: Bool {
-        self == .overdue || self == .neverChecked
+        self == .overdue || self == .needsAttention || self == .neverChecked
     }
 }

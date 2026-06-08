@@ -57,6 +57,14 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                if notifications.lastSchedulingFailureCount > 0 {
+                    let n = notifications.lastSchedulingFailureCount
+                    Label("\(n) reminder\(n == 1 ? "" : "s") couldn't be scheduled.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Button("Try Again") { rescheduleNotifications() }
+                }
             } header: {
                 Text("Notifications")
             } footer: {
@@ -145,21 +153,15 @@ struct SettingsView: View {
     // MARK: Actions
 
     private func enableNotifications() {
-        let lead = settings.globalLeadTimeDays
         settings.notificationsRequested = true
         Task {
             _ = await notifications.requestAuthorization()
-            let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-            await notifications.reschedule(items: items, globalLeadTimeDays: lead)
+            notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
         }
     }
 
     private func rescheduleNotifications() {
-        let lead = settings.globalLeadTimeDays
-        Task {
-            let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-            await notifications.reschedule(items: items, globalLeadTimeDays: lead)
-        }
+        notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 }
 

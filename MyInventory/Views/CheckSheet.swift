@@ -98,11 +98,7 @@ struct CheckSheet: View {
             return
         }
 
-        let lead = settings.globalLeadTimeDays
-        Task {
-            let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-            await notifications.reschedule(items: items, globalLeadTimeDays: lead)
-        }
+        notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
         dismiss()
     }
 }

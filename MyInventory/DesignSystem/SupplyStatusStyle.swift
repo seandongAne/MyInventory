@@ -21,6 +21,8 @@ extension SupplyStatus {
             StatusStyle(color: Theme.statusOverdue,      symbol: "exclamationmark.circle.fill",   label: "Overdue")
         case .dueSoon:
             StatusStyle(color: Theme.statusDueSoon,      symbol: "clock.badge.exclamationmark",   label: "Due soon")
+        case .needsAttention:
+            StatusStyle(color: Theme.statusNeedsAttention, symbol: "exclamationmark.triangle.fill", label: "Needs attention")
         case .ok:
             StatusStyle(color: Theme.statusOK,           symbol: "checkmark.circle.fill",         label: "OK")
         case .neverChecked:

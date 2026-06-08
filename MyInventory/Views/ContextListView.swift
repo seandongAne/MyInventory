@@ -25,7 +25,7 @@ struct ContextListView: View {
     @State private var debouncedSearch = ""
     @State private var showingAddItem = false
     @State private var showingCategoryManager = false
-    @State private var listAppeared = false
+    @State private var actionError: String?
 
     var body: some View {
         Group {
@@ -64,6 +64,14 @@ struct ContextListView: View {
             NavigationStack {
                 CategoryManagerView(context: context)
             }
+        }
+        .alert("Action failed", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { actionError = nil }
+        } message: {
+            if let actionError { Text(actionError) }
         }
     }
 
@@ -107,115 +115,100 @@ struct ContextListView: View {
     // MARK: Views
 
     private var groupedList: some View {
-        ZStack {
-            ScreenBackground()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(categories) { category in
-                        categorySection(category)
-                    }
-                }
-                .padding(.horizontal, Theme.spacing8)
-                .padding(.top, Theme.spacing6)
-                .padding(.bottom, Theme.spacing12)
-            }
-            .scrollContentBackground(.hidden)
-        }
-        .onAppear {
-            listAppeared = true
-        }
-        .onDisappear {
-            // Reset so the stagger replays on re-entry.
-            listAppeared = false
-        }
-    }
-
-    private func categorySection(_ category: SupplyCategory) -> some View {
-        let rows = items(in: category)
-        return VStack(alignment: .leading, spacing: Theme.spacing4) {
-            // Section header
-            HStack(spacing: Theme.spacing4) {
-                Text(category.name)
-                    .font(.title3.weight(.semibold))
-                    .fontDesign(.rounded)
-                    .foregroundStyle(Theme.textPrimary)
-                if !rows.isEmpty {
-                    Text("\(rows.count)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Theme.textSecondary.opacity(0.15), in: Capsule())
-                }
-                Spacer()
-            }
-            .padding(.horizontal, Theme.spacing2)
-
-            if rows.isEmpty {
-                Text("No items")
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, Theme.spacing4)
-                    .padding(.vertical, Theme.spacing8)
-            } else {
-                ForEach(Array(rows.enumerated()), id: \.element.persistentModelID) { index, item in
-                    itemButton(item, index: index)
-                }
-            }
-        }
-        .padding(.bottom, Theme.spacing12)
-    }
-
-    private func itemButton(_ item: SupplyItem, index: Int = 0) -> some View {
-        let isSelected = selectedItem?.persistentModelID == item.persistentModelID
-        let lead = settings.globalLeadTimeDays
-        return Button {
-            selectedItem = item
-        } label: {
-            ItemCard(
-                item: item,
-                status: item.status(leadTimeDays: lead),
-                nextDueText: item.statusDetailLabel(globalLead: lead)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                    .strokeBorder(Theme.accent, lineWidth: 2)
-                    .opacity(isSelected ? 1 : 0)
-            )
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            let otherCategories = categories.filter {
-                $0.persistentModelID != item.category?.persistentModelID
-            }
-            if !otherCategories.isEmpty {
-                Menu {
-                    ForEach(otherCategories) { cat in
-                        Button {
-                            moveItem(item, to: cat)
-                        } label: {
-                            Label(cat.name,
-                                  systemImage: cat.isUncategorized ? "tray" : "folder")
+        List(selection: $selectedItem) {
+            ForEach(categories) { category in
+                let rows = items(in: category)
+                Section {
+                    if rows.isEmpty {
+                        Text("No items")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.textSecondary)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(rows) { item in
+                            itemRow(item)
                         }
                     }
-                } label: {
-                    Label("Move to Category", systemImage: "arrow.up.arrow.down")
+                } header: {
+                    sectionHeader(name: category.name, count: rows.count)
                 }
             }
-            Divider()
-            Button(role: .destructive) {
-                deleteItem(item)
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(ScreenBackground())
+    }
+
+    private func sectionHeader(name: String, count: Int) -> some View {
+        HStack(spacing: Theme.spacing4) {
+            Text(name)
+                .font(.title3.weight(.semibold))
+                .fontDesign(.rounded)
+                .foregroundStyle(Theme.textPrimary)
+            if count > 0 {
+                Text("\(count)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.textSecondary.opacity(0.15), in: Capsule())
+            }
+            Spacer()
+        }
+        .textCase(nil)
+        .padding(.vertical, Theme.spacing2)
+    }
+
+    /// One selectable item row. Driving selection through `List(selection:)` + `.tag`
+    /// (rather than a plain Button) is what lets NavigationSplitView push the detail
+    /// column on iPhone / compact width — and it still shows in-place on iPad (H1).
+    @ViewBuilder
+    private func itemRow(_ item: SupplyItem) -> some View {
+        let lead = settings.globalLeadTimeDays
+        let isSelected = selectedItem?.persistentModelID == item.persistentModelID
+        ItemCard(
+            item: item,
+            status: item.status(leadTimeDays: lead),
+            nextDueText: item.statusDetailLabel(globalLead: lead)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
+                .strokeBorder(Theme.accent, lineWidth: 2)
+                .opacity(isSelected ? 1 : 0)
+        )
+        .tag(item)
+        .listRowInsets(EdgeInsets(top: Theme.spacing2, leading: Theme.spacing8,
+                                  bottom: Theme.spacing2, trailing: Theme.spacing8))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .contextMenu { itemContextMenu(item) }
+    }
+
+    @ViewBuilder
+    private func itemContextMenu(_ item: SupplyItem) -> some View {
+        let otherCategories = categories.filter {
+            $0.persistentModelID != item.category?.persistentModelID
+        }
+        if !otherCategories.isEmpty {
+            Menu {
+                ForEach(otherCategories) { cat in
+                    Button {
+                        moveItem(item, to: cat)
+                    } label: {
+                        Label(cat.name, systemImage: cat.isUncategorized ? "tray" : "folder")
+                    }
+                }
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label("Move to Category", systemImage: "arrow.up.arrow.down")
             }
         }
-        .padding(.bottom, Theme.spacing4)
-        .opacity(listAppeared ? 1 : 0)
-        .offset(y: listAppeared ? 0 : 12)
-        .animation(
-            Theme.springGentle.delay(min(Double(index), 8) * 0.04),
-            value: listAppeared
-        )
+        Divider()
+        Button(role: .destructive) {
+            deleteItem(item)
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
     }
 
     private var searchResultsList: some View {
@@ -223,43 +216,18 @@ struct ContextListView: View {
             if searchResults.isEmpty {
                 ContentUnavailableView.search(text: debouncedSearch)
             } else {
-                ZStack {
-                    ScreenBackground()
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            Text("Results")
-                                .font(.title3.weight(.semibold))
-                                .fontDesign(.rounded)
-                                .foregroundStyle(Theme.textPrimary)
-                                .padding(.horizontal, Theme.spacing2)
-                                .padding(.bottom, Theme.spacing4)
-
-                            ForEach(searchResults) { item in
-                                let lead = settings.globalLeadTimeDays
-                                Button {
-                                    selectedItem = item
-                                } label: {
-                                    ItemCard(
-                                        item: item,
-                                        status: item.status(leadTimeDays: lead),
-                                        nextDueText: item.statusDetailLabel(globalLead: lead)
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                                            .strokeBorder(Theme.accent, lineWidth: 2)
-                                            .opacity(selectedItem?.persistentModelID == item.persistentModelID ? 1 : 0)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.bottom, Theme.spacing4)
-                            }
+                List(selection: $selectedItem) {
+                    Section {
+                        ForEach(searchResults) { item in
+                            itemRow(item)
                         }
-                        .padding(.horizontal, Theme.spacing8)
-                        .padding(.top, Theme.spacing6)
-                        .padding(.bottom, Theme.spacing12)
+                    } header: {
+                        sectionHeader(name: "Results", count: searchResults.count)
                     }
-                    .scrollContentBackground(.hidden)
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(ScreenBackground())
             }
         }
     }
@@ -287,31 +255,28 @@ struct ContextListView: View {
             try modelContext.save()
         } catch {
             modelContext.rollback()
-            print("[MyInventory] Failed to move item: \(error)")
+            actionError = error.localizedDescription   // surfaced, not just logged (P1-c)
         }
     }
 
     private func deleteItem(_ item: SupplyItem) {
-        if selectedItem?.persistentModelID == item.persistentModelID {
-            selectedItem = nil
-        }
-        notifications.cancelNotifications(forItemUUID: item.uuid)
+        let uuid = item.uuid
+        let wasSelected = selectedItem?.persistentModelID == item.persistentModelID
         modelContext.delete(item)
         do {
             try modelContext.save()
         } catch {
             modelContext.rollback()
-            print("[MyInventory] Failed to save after item delete: \(error)")
+            actionError = error.localizedDescription
+            return   // item still exists; selection + notifications untouched (P2-a)
         }
+        if wasSelected { selectedItem = nil }
+        notifications.cancelNotifications(forItemUUID: uuid)
         rescheduleNotifications()
     }
 
     private func rescheduleNotifications() {
-        let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-        Task {
-            await notifications.reschedule(items: items,
-                                           globalLeadTimeDays: settings.globalLeadTimeDays)
-        }
+        notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 }
 

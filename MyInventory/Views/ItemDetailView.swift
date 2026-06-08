@@ -208,21 +208,19 @@ struct ItemDetailView: View {
     // MARK: Actions
 
     private func deleteItem() {
-        notifications.cancelNotifications(forItemUUID: item.uuid)
+        let uuid = item.uuid   // capture before the object is invalidated
         modelContext.delete(item)
         do {
             try modelContext.save()
         } catch {
             modelContext.rollback()
             deleteError = error.localizedDescription
-            return
+            return   // notifications untouched — item still exists with its reminders
         }
+        // Only after the delete is durably saved do we cancel/reschedule (P2-a).
+        notifications.cancelNotifications(forItemUUID: uuid)
         onDelete()
-        let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-        Task {
-            await notifications.reschedule(items: items,
-                                           globalLeadTimeDays: settings.globalLeadTimeDays)
-        }
+        notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 }
 
@@ -263,7 +261,7 @@ struct CheckHistoryCard: View {
         switch check.result {
         case .ok:             Theme.statusOK
         case .replaced:       Theme.accent
-        case .needsAttention: Theme.statusDueSoon
+        case .needsAttention: Theme.statusNeedsAttention
         }
     }
 }

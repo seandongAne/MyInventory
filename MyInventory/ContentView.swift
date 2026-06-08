@@ -25,6 +25,7 @@ struct ContentView: View {
     @State private var selectedItem: SupplyItem?
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var seedError: String?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -39,8 +40,17 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             NavigationStack { SettingsView() }
         }
+        .alert("Couldn't set up your data", isPresented: Binding(
+            get: { seedError != nil },
+            set: { if !$0 { seedError = nil } }
+        )) {
+            Button("Try Again") { seedContexts() }
+            Button("OK", role: .cancel) { seedError = nil }
+        } message: {
+            if let seedError { Text(seedError) }
+        }
         .task {
-            SeedData.seedDefaultContextsIfNeeded(in: modelContext)
+            seedContexts()
             if selectedContext == nil { selectedContext = contexts.first }
             await refreshNotifications()
         }
@@ -108,13 +118,22 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Seeding
+
+    private func seedContexts() {
+        do {
+            try SeedData.seedDefaultContextsIfNeeded(in: modelContext)
+        } catch {
+            seedError = error.localizedDescription
+        }
+    }
+
     // MARK: Notifications
 
     private func refreshNotifications() async {
         await notifications.refreshAuthorizationStatus()
-        let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-        await notifications.reschedule(items: items,
-                                       globalLeadTimeDays: settings.globalLeadTimeDays)
+        notifications.rescheduleAll(in: modelContext,
+                                    globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 }
 

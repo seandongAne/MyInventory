@@ -15,16 +15,17 @@ enum SeedData {
     static let defaultContextNames = ["Vehicle", "Bag", "House"]
 
     /// Inserts the default contexts only if none exist yet (idempotent).
+    /// Throws so the caller can surface a setup failure and offer a retry,
+    /// instead of silently leaving the app with no contexts (P2-c).
     @MainActor
-    static func seedDefaultContextsIfNeeded(in context: ModelContext) {
-        let descriptor = FetchDescriptor<SupplyContext>()
-        let existingCount = (try? context.fetchCount(descriptor)) ?? 0
+    static func seedDefaultContextsIfNeeded(in context: ModelContext) throws {
+        let existingCount = try context.fetchCount(FetchDescriptor<SupplyContext>())
         guard existingCount == 0 else { return }
 
         for (index, name) in defaultContextNames.enumerated() {
             context.insert(SupplyContext(name: name, sortOrder: index))
         }
-        try? context.save()
+        try context.save()
     }
 
     /// SF Symbol for a context, matched by name (Dev Plan §6.3). Falls back to a

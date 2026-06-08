@@ -26,6 +26,7 @@ struct CategoryManagerView: View {
     @State private var categoryToDelete: SupplyCategory?
     @State private var moveDestination: SupplyCategory?
     @State private var showingMoveSheet = false
+    @State private var moveError: String?
 
     // Move a single item to another category
     @State private var itemToMove: SupplyItem?
@@ -158,6 +159,14 @@ struct CategoryManagerView: View {
             }
             .navigationTitle("Delete Category")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("Couldn't delete category", isPresented: Binding(
+                get: { moveError != nil },
+                set: { if !$0 { moveError = nil } }
+            )) {
+                Button("OK", role: .cancel) { moveError = nil }
+            } message: {
+                if let moveError { Text(moveError) }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -227,6 +236,9 @@ struct CategoryManagerView: View {
         do {
             try modelContext.save()
         } catch {
+            // Discard the pending insert so it can't be flushed by a later unrelated
+            // save or cause a duplicate on retry (P1).
+            modelContext.rollback()
             saveError = error.localizedDescription
         }
         newName = ""
@@ -253,20 +265,22 @@ struct CategoryManagerView: View {
 
     private func confirmDelete() {
         guard let category = categoryToDelete else { return }
-        let catID = category.persistentModelID
-        let allItems = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
-        let items = allItems.filter { $0.category?.persistentModelID == catID }
-
-        let destination: SupplyCategory
-        if let picked = moveDestination {
-            destination = picked
-        } else {
-            destination = uncategorizedBucket()
-        }
+        // Use the relationship directly — no fetch that could fail and silently
+        // drop items, which would then be orphaned by the .nullify delete rule.
+        let items = category.unwrappedItems
+        let destination = moveDestination ?? uncategorizedBucket()
         for item in items { item.category = destination }
-
         modelContext.delete(category)
-        save()
+
+        do {
+            try modelContext.save()
+        } catch {
+            // Keep the sheet open with an in-context error so the user doesn't lose
+            // their move selection and can retry (P3).
+            modelContext.rollback()
+            moveError = error.localizedDescription
+            return
+        }
 
         showingMoveSheet = false
         categoryToDelete = nil
@@ -277,6 +291,8 @@ struct CategoryManagerView: View {
         do {
             try modelContext.save()
         } catch {
+            // Revert the in-memory category change so it can't look moved-but-unsaved (P1-c).
+            modelContext.rollback()
             saveError = error.localizedDescription
         }
         showingItemMoveSheet = false

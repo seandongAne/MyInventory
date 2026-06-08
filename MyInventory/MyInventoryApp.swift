@@ -16,7 +16,10 @@ struct MyInventoryApp: App {
     @State private var settings = SettingsStore()
     @State private var notifications = NotificationManager()
 
-    let sharedModelContainer: ModelContainer = {
+    private let container: ModelContainer?
+    private let containerErrorMessage: String?
+
+    init() {
         let schema = Schema([
             SupplyContext.self,
             SupplyCategory.self,
@@ -30,19 +33,54 @@ struct MyInventoryApp: App {
             // once the schema is stable. Keep local-only until then.
         )
         do {
-            return try ModelContainer(for: schema, configurations: [configuration])
+            container = try ModelContainer(for: schema, configurations: [configuration])
+            containerErrorMessage = nil
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            // Retry once for transient conditions, then surface a recoverable error
+            // screen rather than crashing (P3-a). We deliberately do NOT fall back to
+            // an in-memory store — that would look fine while silently losing every write.
+            if let retry = try? ModelContainer(for: schema, configurations: [configuration]) {
+                container = retry
+                containerErrorMessage = nil
+            } else {
+                container = nil
+                containerErrorMessage = error.localizedDescription
+            }
         }
-    }()
+    }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(settings)
-                .environment(notifications)
-                .tint(Theme.accent)
+            if let container {
+                ContentView()
+                    .environment(settings)
+                    .environment(notifications)
+                    .tint(Theme.accent)
+                    .modelContainer(container)
+            } else {
+                StorageErrorView(message: containerErrorMessage ?? "The data store could not be opened.")
+                    .tint(Theme.accent)
+            }
         }
-        .modelContainer(sharedModelContainer)
+    }
+}
+
+/// Shown when the persistent store can't be opened at launch — a recoverable
+/// dead-end instead of a crash. Relaunching re-attempts container creation.
+private struct StorageErrorView: View {
+    let message: String
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Storage unavailable", systemImage: "externaldrive.badge.exclamationmark")
+        } description: {
+            Text("MyInventory couldn't open its local data store, so it can't run safely. Your saved data has not been deleted.\n\nTry restarting the app or your device, and make sure the device has free storage space.")
+        } actions: {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
     }
 }
