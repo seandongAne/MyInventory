@@ -1,0 +1,299 @@
+//
+//  ItemDetailView.swift
+//  MyInventory
+//
+//  Detail column: card sections, prominent "Check now" button, full check history.
+//
+
+import SwiftUI
+import SwiftData
+import UIKit
+
+struct ItemDetailView: View {
+    let item: SupplyItem
+    var onDelete: () -> Void = {}
+
+    @Environment(\.modelContext) private var modelContext
+    @Environment(SettingsStore.self) private var settings
+    @Environment(NotificationManager.self) private var notifications
+
+    @State private var showingCheckSheet = false
+    @State private var showingEdit = false
+    @State private var showingDeleteConfirm = false
+    @State private var deleteError: String?
+
+    private var status: SupplyStatus {
+        item.status(leadTimeDays: settings.globalLeadTimeDays)
+    }
+
+    var body: some View {
+        ZStack {
+            ScreenBackground()
+            ScrollView {
+                VStack(spacing: Theme.spacing12) {
+                    photoCard
+                    statusCard
+                    detailsCard
+                    historyCard
+                }
+                .padding(.horizontal, Theme.spacing8)
+                .padding(.top, Theme.spacing6)
+                .padding(.bottom, Theme.spacing16)
+            }
+            .scrollContentBackground(.hidden)
+        }
+        .navigationTitle(item.name.isEmpty ? "Item" : item.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingEdit = true } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(role: .destructive) { showingDeleteConfirm = true } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+        .sheet(isPresented: $showingCheckSheet) {
+            NavigationStack { CheckSheet(item: item) }
+        }
+        .sheet(isPresented: $showingEdit) {
+            NavigationStack { ItemEditView(mode: .edit(item)) }
+        }
+        .confirmationDialog("Delete this item?",
+                            isPresented: $showingDeleteConfirm,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { deleteItem() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the item and its full check history.")
+        }
+        .alert("Could not delete", isPresented: Binding(
+            get: { deleteError != nil },
+            set: { if !$0 { deleteError = nil } }
+        )) {
+            Button("OK", role: .cancel) { deleteError = nil }
+        } message: {
+            if let msg = deleteError { Text(msg) }
+        }
+    }
+
+    // MARK: Cards
+
+    @ViewBuilder
+    private var photoCard: some View {
+        if let data = item.photo, let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: 220)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
+                .shadow(color: Theme.cardShadowColor, radius: Theme.cardShadowRadius, y: Theme.cardShadowY)
+        }
+    }
+
+    private var statusCard: some View {
+        VStack(spacing: Theme.spacing8) {
+            HStack {
+                StatusBadge(status: status)
+                Text(item.statusDetailLabel(globalLead: settings.globalLeadTimeDays))
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                Spacer()
+            }
+
+            Button {
+                showingCheckSheet = true
+            } label: {
+                Label("Check now", systemImage: "checkmark.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PressableButtonStyle(tint: status.isAttention ? Theme.statusOverdue : Theme.accent))
+        }
+        .cardStyle()
+    }
+
+    private var detailsCard: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing6) {
+            Text("Details")
+                .font(.title3.weight(.semibold))
+                .fontDesign(.rounded)
+                .foregroundStyle(Theme.textPrimary)
+
+            Divider()
+
+            detailRow("Context",  value: item.context?.name ?? "—")
+            detailRow("Category", value: item.category?.name ?? "Uncategorized")
+            detailRow("Re-check interval", value: intervalText)
+            if item.checkIntervalMonths != nil {
+                detailRow("Next due", value: nextDueText)
+                detailRow("Advance warning", value: leadText)
+            }
+            detailRow("Last checked", value: lastCheckedText)
+            if item.hasLocation {
+                detailRow("Location", value: item.storageLocation ?? "")
+            }
+        }
+        .cardStyle()
+    }
+
+    private func detailRow(_ label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(Theme.textSecondary)
+                .frame(minWidth: 120, alignment: .leading)
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(Theme.textPrimary)
+                .multilineTextAlignment(.trailing)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var historyCard: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing6) {
+            Label("Check history", systemImage: "clock.arrow.circlepath")
+                .font(.title3.weight(.semibold))
+                .fontDesign(.rounded)
+                .foregroundStyle(Theme.textPrimary)
+
+            Divider()
+
+            if item.unwrappedChecks.isEmpty {
+                Text("No checks yet")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.vertical, Theme.spacing4)
+            } else {
+                VStack(spacing: Theme.spacing4) {
+                    ForEach(item.unwrappedChecks) { check in
+                        CheckHistoryCard(check: check)
+                    }
+                }
+            }
+        }
+        .cardStyle()
+    }
+
+    // MARK: Derived text
+
+    private var intervalText: String {
+        guard let months = item.checkIntervalMonths else { return "Never expires" }
+        if months % 12 == 0 {
+            let years = months / 12
+            return "Every \(years) year\(years == 1 ? "" : "s")"
+        }
+        return "Every \(months) month\(months == 1 ? "" : "s")"
+    }
+
+    private var nextDueText: String {
+        guard let due = item.nextDueDate() else { return "After first check" }
+        return due.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private var leadText: String {
+        let days = item.effectiveLeadTimeDays(globalLead: settings.globalLeadTimeDays)
+        let suffix = item.leadTimeDaysOverride == nil ? " (default)" : ""
+        return "\(days) day\(days == 1 ? "" : "s") early\(suffix)"
+    }
+
+    private var lastCheckedText: String {
+        guard let last = item.lastCheck else { return "Never" }
+        return last.date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    // MARK: Actions
+
+    private func deleteItem() {
+        notifications.cancelNotifications(forItemUUID: item.uuid)
+        modelContext.delete(item)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            deleteError = error.localizedDescription
+            return
+        }
+        onDelete()
+        let items = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
+        Task {
+            await notifications.reschedule(items: items,
+                                           globalLeadTimeDays: settings.globalLeadTimeDays)
+        }
+    }
+}
+
+// MARK: - Check history card
+
+struct CheckHistoryCard: View {
+    let check: CheckRecord
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.spacing6) {
+            // Status icon column
+            Image(systemName: check.result.systemImage)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: Theme.spacing2) {
+                HStack {
+                    Text(check.result.rawValue)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Text(check.date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                if check.hasComment, let comment = check.comment {
+                    Text(comment)
+                        .font(.callout)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
+        }
+        .padding(.vertical, Theme.spacing2)
+    }
+
+    private var iconColor: Color {
+        switch check.result {
+        case .ok:             Theme.statusOK
+        case .replaced:       Theme.accent
+        case .needsAttention: Theme.statusDueSoon
+        }
+    }
+}
+
+// MARK: - Preview
+
+#Preview("Overdue item with history") {
+    let container = try! ModelContainer(
+        for: SupplyContext.self, SupplyCategory.self, SupplyItem.self, CheckRecord.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
+    let ctx = container.mainContext
+    let supplyCtx = SupplyContext(name: "Vehicle", sortOrder: 0)
+    ctx.insert(supplyCtx)
+    let cat = SupplyCategory(name: "Emergency Kit", sortOrder: 0)
+    cat.context = supplyCtx
+    ctx.insert(cat)
+    let item = SupplyItem(name: "First Aid Kit", checkIntervalMonths: 6, storageLocation: "Trunk")
+    item.category = cat
+    ctx.insert(item)
+    let r1 = CheckRecord(date: Calendar.current.date(byAdding: .month, value: -7, to: .now)!, result: .ok, comment: "All items present and in date.")
+    r1.item = item; ctx.insert(r1)
+    let r2 = CheckRecord(date: Calendar.current.date(byAdding: .month, value: -13, to: .now)!, result: .replaced, comment: "Replaced bandages and antiseptic.")
+    r2.item = item; ctx.insert(r2)
+    try? ctx.save()
+
+    return NavigationStack {
+        ItemDetailView(item: item)
+    }
+    .modelContainer(container)
+    .environment(SettingsStore())
+    .environment(NotificationManager())
+}

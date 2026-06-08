@@ -1,0 +1,305 @@
+//
+//  CategoryManagerView.swift
+//  MyInventory
+//
+//  Create / remove categories. Deleting a non-empty category prompts the user
+//  to pick a destination for its items. The Uncategorized bucket shows its
+//  items inline so they can be moved out at any time.
+//
+
+import SwiftUI
+import SwiftData
+
+struct CategoryManagerView: View {
+    let context: SupplyContext
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    @Query(sort: \SupplyCategory.sortOrder) private var allCategories: [SupplyCategory]
+
+    @State private var showingAddAlert = false
+    @State private var newName = ""
+    @State private var saveError: String?
+
+    // Delete-with-move flow
+    @State private var categoryToDelete: SupplyCategory?
+    @State private var moveDestination: SupplyCategory?
+    @State private var showingMoveSheet = false
+
+    // Move a single item to another category
+    @State private var itemToMove: SupplyItem?
+    @State private var showingItemMoveSheet = false
+
+    private var categories: [SupplyCategory] {
+        allCategories.filter { $0.context?.persistentModelID == context.persistentModelID }
+    }
+
+    private var otherCategories: [SupplyCategory] {
+        categories.filter { $0.persistentModelID != categoryToDelete?.persistentModelID }
+    }
+
+    var body: some View {
+        List {
+            if categories.isEmpty {
+                ContentUnavailableView(
+                    "No categories",
+                    systemImage: "folder",
+                    description: Text("Add a category to start organizing this context.")
+                )
+            } else {
+                ForEach(categories) { category in
+                    categoryRow(category)
+                }
+                .onDelete(perform: initiateDelete)
+            }
+        }
+        .navigationTitle("\(context.name) Categories")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    newName = ""
+                    showingAddAlert = true
+                } label: {
+                    Label("Add Category", systemImage: "plus")
+                }
+            }
+        }
+        .alert("New Category", isPresented: $showingAddAlert) {
+            TextField("Category name", text: $newName)
+            Button("Add") { addCategory() }
+            Button("Cancel", role: .cancel) { newName = "" }
+        }
+        .alert("Could not save", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveError = nil }
+        } message: {
+            if let msg = saveError { Text(msg) }
+        }
+        // Delete with move destination picker
+        .sheet(isPresented: $showingMoveSheet) {
+            moveItemsSheet
+        }
+        // Move single item
+        .sheet(isPresented: $showingItemMoveSheet) {
+            if let item = itemToMove {
+                moveItemSheet(item: item)
+            }
+        }
+    }
+
+    // MARK: Row
+
+    @ViewBuilder
+    private func categoryRow(_ category: SupplyCategory) -> some View {
+        let items = category.unwrappedItems
+        DisclosureGroup {
+            if items.isEmpty {
+                Text("No items")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(items.sorted(by: { $0.name < $1.name })) { item in
+                    HStack {
+                        Text(item.name)
+                            .font(.subheadline)
+                        Spacer()
+                        Button {
+                            itemToMove = item
+                            showingItemMoveSheet = true
+                        } label: {
+                            Label("Move", systemImage: "arrow.up.arrow.down")
+                                .labelStyle(.iconOnly)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        } label: {
+            HStack {
+                Label(category.name, systemImage: category.isUncategorized ? "tray" : "folder")
+                Spacer()
+                Text("\(items.count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .deleteDisabled(category.isUncategorized && !items.isEmpty)
+    }
+
+    // MARK: Sheets
+
+    private var moveItemsSheet: some View {
+        NavigationStack {
+            let cat = categoryToDelete
+            let itemCount = cat?.unwrappedItems.count ?? 0
+            Form {
+                Section {
+                    Picker("Move items to", selection: $moveDestination) {
+                        Text("Uncategorized").tag(nil as SupplyCategory?)
+                        ForEach(otherCategories.filter { !$0.isUncategorized }) { c in
+                            Text(c.name).tag(c as SupplyCategory?)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("Move \(itemCount) item\(itemCount == 1 ? "" : "s") to")
+                } footer: {
+                    Text("Then delete the \(cat?.name ?? "") category.")
+                }
+            }
+            .navigationTitle("Delete Category")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showingMoveSheet = false
+                        categoryToDelete = nil
+                        moveDestination = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Delete", role: .destructive) {
+                        confirmDelete()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func moveItemSheet(item: SupplyItem) -> some View {
+        let destinations = categories.filter {
+            $0.persistentModelID != item.category?.persistentModelID
+        }
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(destinations) { cat in
+                        Button {
+                            item.category = cat
+                            saveAndDismissItemMove()
+                        } label: {
+                            HStack {
+                                Label(cat.name, systemImage: cat.isUncategorized ? "tray" : "folder")
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.tertiary)
+                                    .font(.footnote)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Move \(item.name) to")
+                }
+            }
+            .navigationTitle("Move Item")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showingItemMoveSheet = false
+                        itemToMove = nil
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Mutations
+
+    private func addCategory() {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let nextOrder = (categories.map(\.sortOrder).max() ?? -1) + 1
+        let category = SupplyCategory(name: trimmed, sortOrder: nextOrder)
+        category.context = context
+        modelContext.insert(category)
+        do {
+            try modelContext.save()
+        } catch {
+            saveError = error.localizedDescription
+        }
+        newName = ""
+    }
+
+    private func initiateDelete(_ offsets: IndexSet) {
+        guard let index = offsets.first else { return }
+        let category = categories[index]
+
+        // Uncategorized with items: deletion is disabled at the row level.
+        if category.isUncategorized { return }
+
+        if category.unwrappedItems.isEmpty {
+            // Empty category — delete immediately without a sheet.
+            modelContext.delete(category)
+            save()
+        } else {
+            // Non-empty — ask where to move the items first.
+            categoryToDelete = category
+            moveDestination = nil
+            showingMoveSheet = true
+        }
+    }
+
+    private func confirmDelete() {
+        guard let category = categoryToDelete else { return }
+        let catID = category.persistentModelID
+        let allItems = (try? modelContext.fetch(FetchDescriptor<SupplyItem>())) ?? []
+        let items = allItems.filter { $0.category?.persistentModelID == catID }
+
+        let destination: SupplyCategory
+        if let picked = moveDestination {
+            destination = picked
+        } else {
+            destination = uncategorizedBucket()
+        }
+        for item in items { item.category = destination }
+
+        modelContext.delete(category)
+        save()
+
+        showingMoveSheet = false
+        categoryToDelete = nil
+        moveDestination = nil
+    }
+
+    private func saveAndDismissItemMove() {
+        do {
+            try modelContext.save()
+        } catch {
+            saveError = error.localizedDescription
+        }
+        showingItemMoveSheet = false
+        itemToMove = nil
+    }
+
+    private func save() {
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            saveError = error.localizedDescription
+        }
+    }
+
+    private func uncategorizedBucket() -> SupplyCategory {
+        if let existing = categories.first(where: { $0.isUncategorized }) {
+            return existing
+        }
+        let nextOrder = (categories.map(\.sortOrder).max() ?? -1) + 1
+        let bucket = SupplyCategory(name: SupplyCategory.uncategorizedName, sortOrder: nextOrder)
+        bucket.context = context
+        modelContext.insert(bucket)
+        return bucket
+    }
+}
