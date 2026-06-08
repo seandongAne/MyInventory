@@ -23,6 +23,7 @@ import Observation
 import SwiftData
 import UserNotifications
 
+@MainActor
 @Observable
 final class NotificationManager {
 
