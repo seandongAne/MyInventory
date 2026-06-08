@@ -5,9 +5,10 @@
 //  Local notifications for due / due-soon / first-check items (Dev Plan §5, §M4).
 //
 //  Key constraints handled here:
-//   • iOS caps pending local notifications at 64 → we schedule only the
-//     soonest-FIRING notifications inside a rolling window, never exceeding a
-//     cap kept well under 64. Refresh on app foreground.
+//   • iOS caps pending local notifications at 64 → we schedule the
+//     soonest-FIRING notifications up to a cap kept well under 64. There is no
+//     look-ahead window: far-future dues are scheduled too (a personal-scale
+//     inventory never approaches the cap). Refresh on app foreground.
 //   • Never-expires (nil interval) items schedule nothing.
 //   • Never-checked items (interval, zero checks) DO get a first-check reminder.
 //   • A fetch failure must NEVER wipe existing reminders — `rescheduleAll(in:)`
@@ -24,9 +25,6 @@ import UserNotifications
 
 @Observable
 final class NotificationManager {
-
-    /// How far ahead we schedule. Items due beyond this are picked up on a later refresh.
-    var windowDays: Int = 90
 
     /// Hard ceiling well under the iOS 64-notification limit (leaves headroom).
     private let maxPending = 60
@@ -91,7 +89,6 @@ final class NotificationManager {
         let plans = Self.plannedNotifications(
             for: items,
             now: now,
-            windowDays: windowDays,
             globalLeadTimeDays: globalLeadTimeDays,
             maxPending: maxPending,
             calendar: calendar
@@ -149,23 +146,20 @@ final class NotificationManager {
     /// Rules:
     ///  • nil interval (never expires)            → nothing.
     ///  • interval + no checks (never checked)    → a first-check reminder "now".
-    ///  • interval + future due inside window     → a due reminder + optional lead.
+    ///  • interval + any future due               → a due reminder + optional lead.
     ///  • interval + already overdue (has checks)  → nothing (surfaced in-app).
     static func plannedNotifications(for items: [SupplyItem],
                                      now: Date,
-                                     windowDays: Int,
                                      globalLeadTimeDays: Int,
                                      maxPending: Int,
                                      calendar: Calendar = .current) -> [PlannedNotification] {
-        guard let windowEnd = calendar.date(byAdding: .day, value: windowDays, to: now) else { return [] }
-
         var candidates: [PlannedNotification] = []
         for item in items {
             guard item.checkIntervalMonths != nil else { continue }   // never expires
             if item.lastCheck == nil {
                 // First-check reminder — scheduled "now" (clamped to next 9am in add()).
                 candidates.append(PlannedNotification(itemUUID: item.uuid, kind: .due, fireDate: now))
-            } else if let due = item.nextDueDate(calendar: calendar), due > now, due <= windowEnd {
+            } else if let due = item.nextDueDate(calendar: calendar), due > now {
                 candidates.append(PlannedNotification(itemUUID: item.uuid, kind: .due, fireDate: due))
                 let lead = item.effectiveLeadTimeDays(globalLead: globalLeadTimeDays)
                 if lead > 0,

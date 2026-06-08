@@ -180,7 +180,7 @@ final class MyInventoryTests: XCTestCase {
     func testPlannerExcludesNeverExpires() {
         let item = makeItem(intervalMonths: nil)
         let plans = NotificationManager.plannedNotifications(
-            for: [item], now: .now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 60)
+            for: [item], now: .now, globalLeadTimeDays: 7, maxPending: 60)
         XCTAssertTrue(plans.isEmpty)
     }
 
@@ -188,7 +188,7 @@ final class MyInventoryTests: XCTestCase {
         let now = Date.now
         let item = makeItem(intervalMonths: 6)   // interval, zero checks
         let plans = NotificationManager.plannedNotifications(
-            for: [item], now: now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 60)
+            for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60)
         XCTAssertEqual(plans.count, 1)
         XCTAssertEqual(plans.first?.kind, .due)
         XCTAssertEqual(plans.first?.fireDate, now)        // scheduled "now" (clamped to next 9am at add())
@@ -199,7 +199,7 @@ final class MyInventoryTests: XCTestCase {
         let now = Date.now
         let item = makeItem(intervalMonths: 12, dueOffsetDays: 30, now: now)
         let plans = NotificationManager.plannedNotifications(
-            for: [item], now: now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 60)
+            for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60)
         XCTAssertTrue(plans.contains { $0.kind == .due })
         XCTAssertTrue(plans.contains { $0.kind == .lead && $0.leadDays == 7 })
     }
@@ -208,16 +208,18 @@ final class MyInventoryTests: XCTestCase {
         let now = Date.now
         let item = makeItem(intervalMonths: 6, dueOffsetDays: -10, now: now)
         let plans = NotificationManager.plannedNotifications(
-            for: [item], now: now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 60)
+            for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60)
         XCTAssertTrue(plans.isEmpty)
     }
 
-    func testPlannerExcludesBeyondWindow() {
+    func testPlannerSchedulesFarFutureDue() {
         let now = Date.now
+        // A due date far in the future (well beyond the old 90-day window) must now
+        // be scheduled — a personal-scale inventory never exhausts the 64 cap.
         let item = makeItem(intervalMonths: 24, dueOffsetDays: 200, now: now)
         let plans = NotificationManager.plannedNotifications(
-            for: [item], now: now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 60)
-        XCTAssertTrue(plans.isEmpty)
+            for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60)
+        XCTAssertTrue(plans.contains { $0.kind == .due })
     }
 
     func testPlannerRespectsCap() {
@@ -225,7 +227,7 @@ final class MyInventoryTests: XCTestCase {
         let a = makeItem(name: "A", intervalMonths: 12, dueOffsetDays: 10, now: now)
         let b = makeItem(name: "B", intervalMonths: 12, dueOffsetDays: 20, now: now)
         let plans = NotificationManager.plannedNotifications(
-            for: [a, b], now: now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 1)
+            for: [a, b], now: now, globalLeadTimeDays: 7, maxPending: 1)
         XCTAssertEqual(plans.count, 1)
     }
 
@@ -234,7 +236,7 @@ final class MyInventoryTests: XCTestCase {
         let later = makeItem(name: "Later", intervalMonths: 12, dueOffsetDays: 40, now: now)
         let sooner = makeItem(name: "Sooner", intervalMonths: 12, dueOffsetDays: 10, now: now)
         let plans = NotificationManager.plannedNotifications(
-            for: [later, sooner], now: now, windowDays: 90, globalLeadTimeDays: 0, maxPending: 60)
+            for: [later, sooner], now: now, globalLeadTimeDays: 0, maxPending: 60)
         XCTAssertEqual(plans.first?.itemUUID, sooner.uuid)
     }
 
@@ -251,7 +253,7 @@ final class MyInventoryTests: XCTestCase {
         // With a single slot, it must go to A's lead (fires day 20) — the soonest
         // FIRING notification — not B's due (day 25).
         let plans = NotificationManager.plannedNotifications(
-            for: [a, b], now: now, windowDays: 90, globalLeadTimeDays: 7, maxPending: 1)
+            for: [a, b], now: now, globalLeadTimeDays: 7, maxPending: 1)
         XCTAssertEqual(plans.count, 1)
         XCTAssertEqual(plans.first?.itemUUID, a.uuid)
         XCTAssertEqual(plans.first?.kind, .lead)
