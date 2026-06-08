@@ -71,4 +71,29 @@ final class MyInventoryUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(card.waitForExistence(timeout: 5))
     }
+
+    /// Adding a context from the sidebar makes it appear in the list.
+    @MainActor
+    func testAddContextAppearsInSidebar() throws {
+        let app = launchApp()
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 10))
+
+        app.buttons["Add Context"].tap()
+
+        let nameField = app.alerts.textFields.firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5))
+        nameField.tap()
+        nameField.typeText("Cabin")
+        app.alerts.buttons["Add"].tap()
+
+        XCTAssertTrue(app.staticTexts["Cabin"].waitForExistence(timeout: 5))
+    }
+
+    // NOTE: Deleting a context (swipe-to-delete → confirm) is covered at the model
+    // level by MyInventoryTests.testDeletingContextDeletesItemsLeavingNoOrphans,
+    // which proves the orphan-safe deletion. A UI test for it is intentionally
+    // omitted: automating swipe-to-delete on a NavigationSplitView sidebar row is
+    // unreliable (the swipe is interpreted as row selection, navigating into the
+    // context instead of revealing the Delete action). The UI trigger itself is the
+    // same .onDelete + confirmationDialog pattern used by CategoryManagerView.
 }

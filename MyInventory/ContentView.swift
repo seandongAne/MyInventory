@@ -34,6 +34,12 @@ struct ContentView: View {
     @State private var debouncedSearch = ""
     @State private var searchResultItem: SupplyItem?
 
+    // Add / delete top-level contexts (Vehicle/Bag/House and any the user adds).
+    @State private var showingAddContext = false
+    @State private var newContextName = ""
+    @State private var contextPendingDeletion: SupplyContext?
+    @State private var contextActionError: String?
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
@@ -95,6 +101,14 @@ struct ContentView: View {
             debouncedSearch = searchText
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    newContextName = ""
+                    showingAddContext = true
+                } label: {
+                    Label("Add Context", systemImage: "plus")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingSettings = true
@@ -110,6 +124,44 @@ struct ContentView: View {
                 ItemDetailView(item: item, onDelete: { searchResultItem = nil })
             }
         }
+        .alert("New Context", isPresented: $showingAddContext) {
+            TextField("Name (e.g. Cabin, Boat)", text: $newContextName)
+            Button("Add") { addContext() }
+            Button("Cancel", role: .cancel) { newContextName = "" }
+        } message: {
+            Text("Add a top-level place for your supplies, alongside Vehicle, Bag, and House.")
+        }
+        .confirmationDialog(
+            "Delete “\(contextPendingDeletion?.name ?? "")”?",
+            isPresented: Binding(
+                get: { contextPendingDeletion != nil },
+                set: { if !$0 { contextPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let context = contextPendingDeletion {
+                    contextPendingDeletion = nil
+                    deleteContext(context)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let context = contextPendingDeletion {
+                let n = context.allItems.count
+                Text(n == 0
+                     ? "This removes the context."
+                     : "This permanently deletes the context, its \(n) item\(n == 1 ? "" : "s"), and all their check history.")
+            }
+        }
+        .alert("Action failed", isPresented: Binding(
+            get: { contextActionError != nil },
+            set: { if !$0 { contextActionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { contextActionError = nil }
+        } message: {
+            if let contextActionError { Text(contextActionError) }
+        }
     }
 
     private var contextList: some View {
@@ -119,6 +171,7 @@ struct ContentView: View {
                     ContextSidebarRow(context: context)
                         .tag(context)
                 }
+                .onDelete(perform: requestDeleteContext)
             }
         }
     }
@@ -204,6 +257,62 @@ struct ContentView: View {
 
     private func seedUITestSample() {
         try? SeedData.seedUITestSampleIfNeeded(in: modelContext)
+    }
+
+    // MARK: Context management
+
+    private func addContext() {
+        let trimmed = newContextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        newContextName = ""
+        guard !trimmed.isEmpty else { return }
+        let nextOrder = (contexts.map(\.sortOrder).max() ?? -1) + 1
+        let context = SupplyContext(name: trimmed, sortOrder: nextOrder)
+        modelContext.insert(context)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            contextActionError = error.localizedDescription
+        }
+    }
+
+    private func requestDeleteContext(_ offsets: IndexSet) {
+        guard let index = offsets.first else { return }
+        let context = contexts[index]
+        // Keep at least one context: the app always needs somewhere to put supplies,
+        // and it stops the first-launch defaults from being re-seeded over an empty store.
+        guard contexts.count > 1 else {
+            contextActionError = "You need at least one context. Add another before deleting this one."
+            return
+        }
+        contextPendingDeletion = context
+    }
+
+    private func deleteContext(_ context: SupplyContext) {
+        // Delete the context's items explicitly. The context→categories rule is
+        // .cascade, but categories→items is .nullify — so without this the items would
+        // be left orphaned (reachable from no context). item→checks is .cascade, so
+        // deleting each item also removes its check history.
+        let items = context.allItems
+        let uuids = items.map(\.uuid)
+        for item in items { modelContext.delete(item) }
+        modelContext.delete(context)
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            contextActionError = error.localizedDescription
+            return
+        }
+
+        if selectedContext?.persistentModelID == context.persistentModelID {
+            selectedContext = nil
+            selectedItem = nil
+        }
+        // Reminders for the now-deleted items must be cancelled and the rest refreshed.
+        for uuid in uuids { notifications.cancelNotifications(forItemUUID: uuid) }
+        notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 
     // MARK: Notifications

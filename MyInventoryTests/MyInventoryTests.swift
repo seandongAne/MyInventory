@@ -284,4 +284,35 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(bucket.unwrappedItems.count, 1)
         XCTAssertTrue(bucket.isUncategorized)
     }
+
+    // MARK: - Context deletion (orphan safety, #3)
+
+    func testDeletingContextDeletesItemsLeavingNoOrphans() throws {
+        // Context -> Category -> Item -> Check.
+        let supplyCtx = SupplyContext(name: "Cabin", sortOrder: 0)
+        context.insert(supplyCtx)
+        let cat = SupplyCategory(name: "Stove Kit", sortOrder: 0)
+        cat.context = supplyCtx
+        context.insert(cat)
+        let item = SupplyItem(name: "Fuel Canister", checkIntervalMonths: 12)
+        item.category = cat
+        context.insert(item)
+        let check = CheckRecord(date: .now, result: .ok)
+        check.item = item
+        context.insert(check)
+        try context.save()
+
+        // Delete exactly as ContentView.deleteContext does: items first (so the
+        // .nullify category->item rule can't orphan them), then the context (whose
+        // .cascade removes its categories; item->check .cascade removes history).
+        for it in supplyCtx.allItems { context.delete(it) }
+        context.delete(supplyCtx)
+        try context.save()
+
+        // Nothing left behind — no orphaned context, category, item, or check.
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SupplyContext>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SupplyCategory>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SupplyItem>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<CheckRecord>()), 0)
+    }
 }
