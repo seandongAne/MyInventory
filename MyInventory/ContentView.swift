@@ -20,12 +20,19 @@ struct ContentView: View {
     @Environment(NotificationManager.self) private var notifications
 
     @Query(sort: \SupplyContext.sortOrder) private var contexts: [SupplyContext]
+    @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
 
     @State private var selectedContext: SupplyContext?
     @State private var selectedItem: SupplyItem?
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var seedError: String?
+
+    // App-wide search lives on the sidebar (root), so a user can find an item
+    // without first knowing which context (Vehicle/Bag/House) it lives in.
+    @State private var searchText = ""
+    @State private var debouncedSearch = ""
+    @State private var searchResultItem: SupplyItem?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -70,6 +77,39 @@ struct ContentView: View {
     // MARK: Columns
 
     private var sidebar: some View {
+        Group {
+            if isSearching {
+                globalSearchResults
+            } else {
+                contextList
+            }
+        }
+        .navigationTitle("MyInventory")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Search all supplies")
+        .task(id: searchText) {
+            try? await Task.sleep(for: .milliseconds(250))
+            debouncedSearch = searchText
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape.fill")
+                }
+            }
+        }
+        // Tapping a result opens the item directly — works the same on iPhone and
+        // iPad regardless of how the split view is collapsed.
+        .sheet(item: $searchResultItem) { item in
+            NavigationStack {
+                ItemDetailView(item: item, onDelete: { searchResultItem = nil })
+            }
+        }
+    }
+
+    private var contextList: some View {
         List(selection: $selectedContext) {
             Section("Supplies") {
                 ForEach(contexts) { context in
@@ -78,13 +118,38 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle("MyInventory")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingSettings = true
-                } label: {
-                    Label("Settings", systemImage: "gearshape.fill")
+    }
+
+    // MARK: Global search
+
+    private var isSearching: Bool {
+        !debouncedSearch.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var searchResults: [SupplyItem] {
+        FuzzySearch.rank(allItems, query: debouncedSearch)
+    }
+
+    @ViewBuilder
+    private var globalSearchResults: some View {
+        if searchResults.isEmpty {
+            ContentUnavailableView.search(text: debouncedSearch)
+        } else {
+            List {
+                Section {
+                    ForEach(searchResults) { item in
+                        Button {
+                            searchResultItem = item
+                        } label: {
+                            GlobalSearchResultRow(
+                                item: item,
+                                status: item.status(leadTimeDays: settings.globalLeadTimeDays)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    Text("\(searchResults.count) result\(searchResults.count == 1 ? "" : "s")")
                 }
             }
         }
@@ -174,6 +239,47 @@ private struct ContextSidebarRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Global search result row
+
+private struct GlobalSearchResultRow: View {
+    let item: SupplyItem
+    let status: SupplyStatus
+
+    var body: some View {
+        HStack(spacing: Theme.spacing6) {
+            Image(systemName: status.style.symbol)
+                .foregroundStyle(status.style.color)
+                .imageScale(.medium)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name.isEmpty ? "Untitled item" : item.name)
+                    .font(.body)
+                    .foregroundStyle(Theme.textPrimary)
+                Text(breadcrumb)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            Spacer(minLength: Theme.spacing4)
+
+            Image(systemName: "chevron.right")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    /// "Vehicle › Emergency Kit" — tells the user where the item lives, since a
+    /// global search spans every context.
+    private var breadcrumb: String {
+        let ctx = item.context?.name ?? "—"
+        let cat = item.category?.name ?? SupplyCategory.uncategorizedName
+        return "\(ctx) › \(cat)"
     }
 }
 
