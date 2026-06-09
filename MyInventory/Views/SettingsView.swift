@@ -31,10 +31,9 @@ struct SettingsView: View {
 
         Form {
             Section {
-                Stepper(value: $settings.globalLeadTimeDays, in: 0...90) {
-                    LabeledContent("Advance warning",
-                                   value: "\(settings.globalLeadTimeDays) day\(settings.globalLeadTimeDays == 1 ? "" : "s")")
-                }
+                PresetValuePicker("Advance warning", value: $settings.globalLeadTimeDays,
+                                  presets: [0, 1, 3, 7, 14, 30], range: 0...90,
+                                  format: daysLabel)
                 Picker("Reminder time", selection: $settings.notificationFireHour) {
                     ForEach(0..<24, id: \.self) { hour in
                         Text(hourLabel(hour)).tag(hour)
@@ -49,9 +48,9 @@ struct SettingsView: View {
             Section {
                 Toggle("Default interval for new items", isOn: defaultIntervalEnabled)
                 if settings.defaultIntervalMonths > 0 {
-                    Stepper(value: defaultIntervalMonths, in: 1...240) {
-                        LabeledContent("Every", value: monthsText(settings.defaultIntervalMonths))
-                    }
+                    PresetValuePicker("Every", value: defaultIntervalMonths,
+                                      presets: [1, 3, 6, 12, 24], range: 1...240,
+                                      format: monthsText)
                 }
             } header: {
                 Text("New item defaults")
@@ -174,6 +173,10 @@ struct SettingsView: View {
     private func hourLabel(_ hour: Int) -> String {
         let date = Calendar.current.date(from: DateComponents(hour: hour)) ?? .now
         return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    private func daysLabel(_ days: Int) -> String {
+        days == 0 ? "None" : "\(days) day\(days == 1 ? "" : "s")"
     }
 
     private var authStatusText: String {

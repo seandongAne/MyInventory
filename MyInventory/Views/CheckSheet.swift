@@ -120,6 +120,7 @@ struct CheckSheet: View {
         }
 
         notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
+        Haptics.success()
         dismiss()
     }
 }

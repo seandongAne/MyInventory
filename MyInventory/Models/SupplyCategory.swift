@@ -37,4 +37,20 @@ final class SupplyCategory {
     static let uncategorizedName = "Uncategorized"
 
     var isUncategorized: Bool { name == SupplyCategory.uncategorizedName }
+
+    /// Finds the context's Uncategorized bucket, creating (and inserting) it if
+    /// needed. The insert participates in the caller's save/rollback. Used both
+    /// by the delete-category flow and by saving an item without a category.
+    @MainActor
+    static func uncategorizedBucket(in context: SupplyContext,
+                                    modelContext: ModelContext) -> SupplyCategory {
+        if let existing = context.unwrappedCategories.first(where: { $0.isUncategorized }) {
+            return existing
+        }
+        let nextOrder = (context.unwrappedCategories.map(\.sortOrder).max() ?? -1) + 1
+        let bucket = SupplyCategory(name: uncategorizedName, sortOrder: nextOrder)
+        bucket.context = context
+        modelContext.insert(bucket)
+        return bucket
+    }
 }
