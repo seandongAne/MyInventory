@@ -25,6 +25,8 @@ struct ContextListView: View {
     @State private var debouncedSearch = ""
     @State private var showingAddItem = false
     @State private var showingCategoryManager = false
+    @State private var showingTemplates = false
+    @State private var bulkCheckCategory: SupplyCategory?
     @State private var actionError: String?
 
     var body: some View {
@@ -40,13 +42,22 @@ struct ContextListView: View {
         .navigationTitle(context.name)
         .searchable(text: $searchText, prompt: "Search supplies")
         .task(id: searchText) {
-            try? await Task.sleep(for: .milliseconds(250))
+            // On cancellation (a newer keystroke) bail out — otherwise the body
+            // would fall through and write immediately, defeating the debounce.
+            guard (try? await Task.sleep(for: .milliseconds(250))) != nil else { return }
             debouncedSearch = searchText
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showingAddItem = true } label: {
-                    Label("Add Item", systemImage: "plus")
+                Menu {
+                    Button { showingAddItem = true } label: {
+                        Label("Add Item", systemImage: "plus")
+                    }
+                    Button { showingTemplates = true } label: {
+                        Label("Add from Template", systemImage: "list.bullet.rectangle")
+                    }
+                } label: {
+                    Label("Add", systemImage: "plus")
                 }
             }
             ToolbarItem(placement: .topBarLeading) {
@@ -64,6 +75,29 @@ struct ContextListView: View {
             NavigationStack {
                 CategoryManagerView(context: context)
             }
+        }
+        .sheet(isPresented: $showingTemplates) {
+            NavigationStack {
+                TemplatePickerView(context: context)
+            }
+        }
+        .confirmationDialog(
+            "Mark all items in “\(bulkCheckCategory?.name ?? "")” as checked?",
+            isPresented: Binding(
+                get: { bulkCheckCategory != nil },
+                set: { if !$0 { bulkCheckCategory = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Mark \(bulkCheckCategory.map { items(in: $0).count } ?? 0) as Checked") {
+                if let category = bulkCheckCategory {
+                    bulkCheckCategory = nil
+                    bulkCheck(category)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Logs an OK check for every item, resetting each re-check countdown.")
         }
         .alert("Action failed", isPresented: Binding(
             get: { actionError != nil },
@@ -131,7 +165,7 @@ struct ContextListView: View {
                         }
                     }
                 } header: {
-                    sectionHeader(name: category.name, count: rows.count)
+                    sectionHeader(name: category.name, count: rows.count, category: category)
                 }
             }
         }
@@ -140,7 +174,7 @@ struct ContextListView: View {
         .background(ScreenBackground())
     }
 
-    private func sectionHeader(name: String, count: Int) -> some View {
+    private func sectionHeader(name: String, count: Int, category: SupplyCategory? = nil) -> some View {
         HStack(spacing: Theme.spacing4) {
             Text(name)
                 .font(.title3.weight(.semibold))
@@ -155,6 +189,18 @@ struct ContextListView: View {
                     .background(Theme.textSecondary.opacity(0.15), in: Capsule())
             }
             Spacer()
+            if let category, count > 0 {
+                Menu {
+                    Button {
+                        bulkCheckCategory = category
+                    } label: {
+                        Label("Mark All as Checked", systemImage: "checkmark.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
         }
         .textCase(nil)
         .padding(.vertical, Theme.spacing2)
@@ -236,14 +282,20 @@ struct ContextListView: View {
         ContentUnavailableView {
             Label("No categories yet", systemImage: "folder")
         } description: {
-            Text("Add a category first, then add the supplies you keep in your \(context.name.lowercased()).")
+            Text("Start from a ready-made checklist, or add a category first and then the supplies you keep in your \(context.name.lowercased()).")
         } actions: {
+            Button {
+                showingTemplates = true
+            } label: {
+                Label("Start from a Template", systemImage: "list.bullet.rectangle")
+            }
+            .buttonStyle(.borderedProminent)
             Button {
                 showingCategoryManager = true
             } label: {
                 Label("Add Category", systemImage: "folder.badge.plus")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
         }
     }
 
@@ -272,6 +324,26 @@ struct ContextListView: View {
         }
         if wasSelected { selectedItem = nil }
         notifications.cancelNotifications(forItemUUID: uuid)
+        rescheduleNotifications()
+    }
+
+    /// Logs an OK check for every item in the category — the "I went through the
+    /// whole emergency kit" flow. One save; rolled back atomically on failure.
+    private func bulkCheck(_ category: SupplyCategory) {
+        let rows = items(in: category)
+        guard !rows.isEmpty else { return }
+        for item in rows {
+            let record = CheckRecord(date: .now, result: .ok)
+            record.item = item
+            modelContext.insert(record)
+        }
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            actionError = error.localizedDescription
+            return
+        }
         rescheduleNotifications()
     }
 

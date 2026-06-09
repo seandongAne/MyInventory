@@ -20,6 +20,9 @@ final class SupplyItem {
     // Optional advance-warning override in days. nil => use the global default.
     var leadTimeDaysOverride: Int? = nil
 
+    // Optional on-hand quantity (e.g. 4 batteries, 2 water bottles). nil = not tracked.
+    var quantity: Int? = nil
+
     var storageLocation: String? = nil
 
     // Single optional photo (v1). External storage keeps the DB light.

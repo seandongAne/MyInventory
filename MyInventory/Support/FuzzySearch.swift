@@ -18,11 +18,15 @@ enum FuzzySearch {
         guard !query.isEmpty else { return items }
 
         let scored: [(item: SupplyItem, score: Double)] = items.compactMap { item in
-            let fields = [
+            var fields = [
                 item.name,
                 item.category?.name ?? "",
+                item.context?.name ?? "",
                 item.storageLocation ?? ""
             ]
+            // Check comments are searchable too ("replaced the AA batteries" should
+            // surface the item even when its name doesn't match).
+            fields.append(contentsOf: (item.checks ?? []).compactMap(\.comment))
             let best = fields
                 .map { score(query: query, candidate: $0.lowercased()) }
                 .max() ?? 0

@@ -14,6 +14,9 @@ struct ItemCard: View {
     let item: SupplyItem
     let status: SupplyStatus
     let nextDueText: String?
+    /// "Vehicle › Emergency Kit" — shown in cross-context lists (attention view)
+    /// where the user needs to know where the item physically lives.
+    var breadcrumb: String? = nil
 
     var body: some View {
         HStack(spacing: Theme.spacing6) {
@@ -27,10 +30,24 @@ struct ItemCard: View {
             thumbnail
 
             VStack(alignment: .leading, spacing: Theme.spacing2) {
-                Text(item.name.isEmpty ? "Untitled item" : item.name)
-                    .font(.headline)
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: Theme.spacing2) {
+                    Text(item.name.isEmpty ? "Untitled item" : item.name)
+                        .font(.headline)
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    if let quantity = item.quantity {
+                        Text("×\(quantity)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+
+                if let breadcrumb {
+                    Text(breadcrumb)
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                }
 
                 if let nextDueText {
                     Text(nextDueText)
@@ -72,7 +89,9 @@ struct ItemCard: View {
     }
 
     @ViewBuilder private var thumbnail: some View {
-        if let data = item.photo, let ui = UIImage(data: data) {
+        // Downsampled + cached — never decode the full stored image per row per render.
+        if let data = item.photo,
+           let ui = Thumbnailer.thumbnail(for: data, cacheKey: "\(item.uuid.uuidString)-\(data.count)") {
             Image(uiImage: ui)
                 .resizable()
                 .scaledToFill()

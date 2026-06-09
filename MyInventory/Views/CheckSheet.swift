@@ -22,8 +22,14 @@ struct CheckSheet: View {
     @State private var date = Date.now
     @State private var result: CheckResult = .ok
     @State private var comment = ""
+    @State private var quantity: Int
     @FocusState private var commentFocused: Bool
     @State private var saveError: String?
+
+    init(item: SupplyItem) {
+        self.item = item
+        _quantity = State(initialValue: item.quantity ?? 0)
+    }
 
     var body: some View {
         Form {
@@ -49,6 +55,18 @@ struct CheckSheet: View {
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
+            }
+
+            if item.quantity != nil {
+                Section {
+                    Stepper(value: $quantity, in: 0...9999) {
+                        LabeledContent("On hand", value: "\(quantity)")
+                    }
+                } header: {
+                    Text("Quantity")
+                } footer: {
+                    Text("Update the count while you're at it (e.g. you used two and restocked one).")
+                }
             }
 
             Section {
@@ -89,6 +107,9 @@ struct CheckSheet: View {
                                  comment: trimmed.isEmpty ? nil : trimmed)
         record.item = item
         modelContext.insert(record)
+        if item.quantity != nil {
+            item.quantity = quantity   // same save; rolled back together on failure
+        }
         do {
             try modelContext.save()
         } catch {

@@ -4,7 +4,8 @@
 //
 //  App entry point. SwiftData is configured LOCAL-ONLY for now — CloudKit sync
 //  is deliberately deferred to M6 so the schema can keep changing freely
-//  (Dev Plan §M0, §9 risk table). Flip `cloudKitDatabase` on at M6.
+//  (Dev Plan §M0, §9 risk table). Container creation/retry lives in
+//  AppModelContainer so App Intents share the same instance.
 //
 
 import SwiftUI
@@ -13,43 +14,31 @@ import SwiftData
 @main
 struct MyInventoryApp: App {
 
-    @State private var settings = SettingsStore()
-    @State private var notifications = NotificationManager()
+    @State private var settings: SettingsStore
+    @State private var notifications: NotificationManager
 
     private let container: ModelContainer?
     private let containerErrorMessage: String?
 
     init() {
-        let schema = Schema([
-            SupplyContext.self,
-            SupplyCategory.self,
-            SupplyItem.self,
-            CheckRecord.self
-        ])
-        // UI tests launch with `-uiTesting` → use a throwaway in-memory store so each
-        // run starts clean and never touches the user's real on-disk data.
-        let isUITesting = ProcessInfo.processInfo.arguments.contains("-uiTesting")
-        let configuration = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: isUITesting
-            // M6: add `, cloudKitDatabase: .automatic` here (and the iCloud entitlement)
-            // once the schema is stable. Keep local-only until then.
-        )
-        do {
-            container = try ModelContainer(for: schema, configurations: [configuration])
+        switch AppModelContainer.shared {
+        case .success(let made):
+            container = made
             containerErrorMessage = nil
-        } catch {
-            // Retry once for transient conditions, then surface a recoverable error
-            // screen rather than crashing (P3-a). We deliberately do NOT fall back to
-            // an in-memory store — that would look fine while silently losing every write.
-            if let retry = try? ModelContainer(for: schema, configurations: [configuration]) {
-                container = retry
-                containerErrorMessage = nil
-            } else {
-                container = nil
-                containerErrorMessage = error.localizedDescription
-            }
+        case .failure(let error):
+            container = nil
+            containerErrorMessage = error.localizedDescription
         }
+
+        let settings = SettingsStore()
+        let notifications = NotificationManager.shared
+        if let container {
+            // Lets background notification actions ("Mark as Checked") reach the
+            // store, and scheduling read the configured fire hour.
+            notifications.configure(container: container, settings: settings)
+        }
+        _settings = State(initialValue: settings)
+        _notifications = State(initialValue: notifications)
     }
 
     var body: some Scene {

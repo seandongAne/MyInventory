@@ -93,6 +93,16 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(item.status(leadTimeDays: 7, now: now), .overdue)
     }
 
+    func testOverdueAtExactDueInstant() {
+        // Fixed mid-month date so the ±6 month round-trip is exact, making
+        // nextDueDate == now precisely — the `now >= due` boundary.
+        let now = cal.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: 12))!
+        let item = makeItem(intervalMonths: 6)
+        addCheck(item, date: cal.date(byAdding: .month, value: -6, to: now)!)
+        XCTAssertEqual(item.nextDueDate(), now)
+        XCTAssertEqual(item.status(leadTimeDays: 7, now: now), .overdue)
+    }
+
     // MARK: - needsAttention (P1-a)
 
     func testNeedsAttentionSurfacesWhenNotOverdue() {
@@ -175,6 +185,30 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(results.first?.name, "Knife")
     }
 
+    func testFuzzyMatchesContextName() throws {
+        let supplyCtx = SupplyContext(name: "Vehicle", sortOrder: 0)
+        context.insert(supplyCtx)
+        let cat = SupplyCategory(name: "Kit", sortOrder: 0)
+        cat.context = supplyCtx
+        context.insert(cat)
+        let item = makeItem(name: "Flashlight", intervalMonths: nil)
+        item.category = cat
+        try context.save()
+
+        XCTAssertEqual(FuzzySearch.rank([item], query: "vehicle").count, 1)
+    }
+
+    func testFuzzyMatchesCheckComment() {
+        let item = makeItem(name: "Power Bank", intervalMonths: nil)
+        let record = CheckRecord(date: .now, result: .replaced, comment: "swapped the lithium cells")
+        record.item = item
+        context.insert(record)
+        try? context.save()
+
+        XCTAssertEqual(FuzzySearch.rank([item], query: "lithium").count, 1)
+        XCTAssertTrue(FuzzySearch.rank([item], query: "zzzz").isEmpty)
+    }
+
     // MARK: - Notification planner (P1-b / P2-b)
 
     func testPlannerExcludesNeverExpires() {
@@ -184,15 +218,14 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertTrue(plans.isEmpty)
     }
 
-    func testPlannerSchedulesNeverCheckedFirstCheckNoLead() {
+    func testPlannerExcludesNeverChecked() {
+        // Never-checked items are surfaced by the attention DIGEST, not a
+        // per-item nag — adding 20 new items must not queue 20 notifications.
         let now = Date.now
         let item = makeItem(intervalMonths: 6)   // interval, zero checks
         let plans = NotificationManager.plannedNotifications(
             for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60)
-        XCTAssertEqual(plans.count, 1)
-        XCTAssertEqual(plans.first?.kind, .due)
-        XCTAssertEqual(plans.first?.fireDate, now)        // scheduled "now" (clamped to next 9am at add())
-        XCTAssertFalse(plans.contains { $0.kind == .lead })
+        XCTAssertTrue(plans.isEmpty)
     }
 
     func testPlannerSchedulesFutureDueWithLead() {
@@ -257,6 +290,137 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(plans.count, 1)
         XCTAssertEqual(plans.first?.itemUUID, a.uuid)
         XCTAssertEqual(plans.first?.kind, .lead)
+    }
+
+    // MARK: - Attention digest (overdue / flagged / never-checked → ONE notification)
+
+    func testDigestCountsAllAttentionStates() {
+        let now = Date.now
+        _ = makeItem(name: "Overdue", intervalMonths: 6, dueOffsetDays: -10, now: now)
+        _ = makeItem(name: "Flagged", intervalMonths: 12, dueOffsetDays: 60,
+                     lastResult: .needsAttention, now: now)
+        let neverChecked = makeItem(name: "New", intervalMonths: 6)
+        _ = neverChecked
+        _ = makeItem(name: "Fine", intervalMonths: 12, dueOffsetDays: 60, now: now)
+        _ = makeItem(name: "NoExpiry", intervalMonths: nil)
+
+        let items = try! context.fetch(FetchDescriptor<SupplyItem>())
+        let digest = NotificationManager.attentionSummary(
+            for: items, globalLeadTimeDays: 7, now: now)
+        XCTAssertEqual(digest?.overdue, 1)
+        XCTAssertEqual(digest?.flagged, 1)
+        XCTAssertEqual(digest?.neverChecked, 1)
+        XCTAssertEqual(digest?.total, 3)
+    }
+
+    func testDigestNilWhenNothingNeedsAttention() {
+        let now = Date.now
+        _ = makeItem(name: "Fine", intervalMonths: 12, dueOffsetDays: 60, now: now)
+        _ = makeItem(name: "NoExpiry", intervalMonths: nil)
+
+        let items = try! context.fetch(FetchDescriptor<SupplyItem>())
+        XCTAssertNil(NotificationManager.attentionSummary(
+            for: items, globalLeadTimeDays: 7, now: now))
+    }
+
+    func testDigestCoversItemThatSlippedOverdueBetweenReschedules() {
+        // The lost-window case: an item whose due instant passed earlier today.
+        // Its per-item due notification is gone, but the digest must pick it up.
+        let now = Date.now
+        let item = makeItem(intervalMonths: 6, dueOffsetDays: 0, now: now)
+        _ = item
+        let items = try! context.fetch(FetchDescriptor<SupplyItem>())
+
+        XCTAssertTrue(NotificationManager.plannedNotifications(
+            for: items, now: now, globalLeadTimeDays: 7, maxPending: 60).isEmpty)
+        XCTAssertEqual(NotificationManager.attentionSummary(
+            for: items, globalLeadTimeDays: 7, now: now)?.total, 1)
+    }
+
+    // MARK: - Fire-date clamping (extracted from add() so it's testable)
+
+    func testResolvedFireDateBeforeFireHourFiresSameDay() {
+        let now = cal.date(from: DateComponents(year: 2026, month: 6, day: 9, hour: 8))!
+        let fireAt = NotificationManager.resolvedFireDate(targetDay: now, now: now, fireHour: 9)
+        XCTAssertEqual(cal.dateComponents([.day, .hour], from: fireAt).day, 9)
+        XCTAssertEqual(cal.dateComponents([.hour], from: fireAt).hour, 9)
+    }
+
+    func testResolvedFireDateAfterFireHourBumpsToNextDay() {
+        let now = cal.date(from: DateComponents(year: 2026, month: 6, day: 9, hour: 10))!
+        let fireAt = NotificationManager.resolvedFireDate(targetDay: now, now: now, fireHour: 9)
+        XCTAssertEqual(cal.dateComponents([.day], from: fireAt).day, 10)
+        XCTAssertEqual(cal.dateComponents([.hour], from: fireAt).hour, 9)
+    }
+
+    func testResolvedFireDateFutureDayFiresAtFireHour() {
+        let now = cal.date(from: DateComponents(year: 2026, month: 6, day: 9, hour: 10))!
+        let target = cal.date(from: DateComponents(year: 2026, month: 6, day: 20, hour: 15))!
+        let fireAt = NotificationManager.resolvedFireDate(targetDay: target, now: now, fireHour: 21)
+        XCTAssertEqual(cal.dateComponents([.day], from: fireAt).day, 20)
+        XCTAssertEqual(cal.dateComponents([.hour], from: fireAt).hour, 21)
+    }
+
+    // MARK: - Notification deep-link identifier parsing
+
+    func testDeepLinkParsing() {
+        let uuid = UUID()
+        XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: "item-\(uuid.uuidString)-due"),
+                       .item(uuid))
+        XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: "item-\(uuid.uuidString)-lead"),
+                       .item(uuid))
+        XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: NotificationManager.digestIdentifier),
+                       .attention)
+        XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "something-else"))
+        XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "item-not-a-uuid-due"))
+    }
+
+    // MARK: - Export
+
+    func testExportRoundTripsHierarchy() throws {
+        let supplyCtx = SupplyContext(name: "Vehicle", sortOrder: 0)
+        context.insert(supplyCtx)
+        let cat = SupplyCategory(name: "Kit", sortOrder: 0)
+        cat.context = supplyCtx
+        context.insert(cat)
+        let item = SupplyItem(name: "First Aid Kit", checkIntervalMonths: 6)
+        item.quantity = 2
+        item.category = cat
+        context.insert(item)
+        let check = CheckRecord(date: .now, result: .replaced, comment: "restocked")
+        check.item = item
+        context.insert(check)
+        try context.save()
+
+        let data = try DataExporter.makeExport(from: context)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let export = try decoder.decode(DataExporter.Export.self, from: data)
+
+        XCTAssertEqual(export.contexts.count, 1)
+        XCTAssertEqual(export.contexts.first?.categories.count, 1)
+        let exportedItem = export.contexts.first?.categories.first?.items.first
+        XCTAssertEqual(exportedItem?.name, "First Aid Kit")
+        XCTAssertEqual(exportedItem?.quantity, 2)
+        XCTAssertEqual(exportedItem?.checks.count, 1)
+        XCTAssertEqual(exportedItem?.checks.first?.result, CheckResult.replaced.rawValue)
+    }
+
+    // MARK: - Templates
+
+    func testTemplateApplyIsIdempotent() throws {
+        let supplyCtx = SupplyContext(name: "Vehicle", sortOrder: 0)
+        context.insert(supplyCtx)
+        try context.save()
+
+        let added = try Templates.apply(Templates.vehicleKit, to: supplyCtx, in: context)
+        XCTAssertEqual(added, Templates.vehicleKit.itemCount)
+
+        // Re-applying must not duplicate categories or items.
+        let addedAgain = try Templates.apply(Templates.vehicleKit, to: supplyCtx, in: context)
+        XCTAssertEqual(addedAgain, 0)
+        XCTAssertEqual(supplyCtx.unwrappedCategories.count, Templates.vehicleKit.categories.count)
+        XCTAssertEqual(supplyCtx.allItems.count, Templates.vehicleKit.itemCount)
     }
 
     // MARK: - Uncategorized move (model level)

@@ -126,6 +126,9 @@ struct ItemDetailView: View {
 
             detailRow("Context",  value: item.context?.name ?? "—")
             detailRow("Category", value: item.category?.name ?? "Uncategorized")
+            if let quantity = item.quantity {
+                detailRow("Quantity", value: "\(quantity)")
+            }
             detailRow("Re-check interval", value: intervalText)
             if item.checkIntervalMonths != nil {
                 detailRow("Next due", value: nextDueText)

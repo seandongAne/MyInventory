@@ -229,6 +229,16 @@ struct CategoryManagerView: View {
     private func addCategory() {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard trimmed.compare(SupplyCategory.uncategorizedName, options: .caseInsensitive) != .orderedSame else {
+            saveError = "“\(SupplyCategory.uncategorizedName)” is reserved for items whose category was deleted."
+            newName = ""
+            return
+        }
+        guard !categories.contains(where: { $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }) else {
+            saveError = "A category named “\(trimmed)” already exists in \(context.name)."
+            newName = ""
+            return
+        }
         let nextOrder = (categories.map(\.sortOrder).max() ?? -1) + 1
         let category = SupplyCategory(name: trimmed, sortOrder: nextOrder)
         category.context = context
@@ -248,8 +258,10 @@ struct CategoryManagerView: View {
         guard let index = offsets.first else { return }
         let category = categories[index]
 
-        // Uncategorized with items: deletion is disabled at the row level.
-        if category.isUncategorized { return }
+        // Uncategorized with items: deletion is disabled at the row level. An
+        // EMPTY Uncategorized is safe to delete (it's recreated on demand), and
+        // falls through to the empty-category path below — no silent no-op.
+        if category.isUncategorized && !category.unwrappedItems.isEmpty { return }
 
         if category.unwrappedItems.isEmpty {
             // Empty category — delete immediately without a sheet.
