@@ -17,11 +17,17 @@ final class SettingsStore {
         static let globalLeadTimeDays = "globalLeadTimeDays"
         static let defaultIntervalMonths = "defaultIntervalMonths"
         static let notificationsRequested = "notificationsRequested"
+        static let notificationFireHour = "notificationFireHour"
     }
 
     /// Days of advance warning before an item becomes overdue.
     var globalLeadTimeDays: Int {
         didSet { defaults.set(globalLeadTimeDays, forKey: Key.globalLeadTimeDays) }
+    }
+
+    /// Local hour of day (0–23) at which reminders fire.
+    var notificationFireHour: Int {
+        didSet { defaults.set(notificationFireHour, forKey: Key.notificationFireHour) }
     }
 
     /// Convenience default interval (months) pre-filled for new items. 0 == none.
@@ -42,11 +48,13 @@ final class SettingsStore {
         defaults.register(defaults: [
             Key.globalLeadTimeDays: 7,
             Key.defaultIntervalMonths: 0,
-            Key.notificationsRequested: false
+            Key.notificationsRequested: false,
+            Key.notificationFireHour: 9
         ])
         self.globalLeadTimeDays = defaults.integer(forKey: Key.globalLeadTimeDays)
         self.defaultIntervalMonths = defaults.integer(forKey: Key.defaultIntervalMonths)
         self.notificationsRequested = defaults.bool(forKey: Key.notificationsRequested)
+        self.notificationFireHour = defaults.integer(forKey: Key.notificationFireHour)
     }
 
     /// nil when no convenience default is configured.

@@ -18,7 +18,7 @@ enum Theme {
     static let statusNeedsAttention = Color(red: 0.86, green: 0.42, blue: 0.10)  // deep amber, distinct from due-soon
     static let statusDueSoon        = Color(red: 0.90, green: 0.55, blue: 0.13)
     static let statusOK             = Color(red: 0.20, green: 0.55, blue: 0.36)
-    static let statusNeverChecked   = Color(red: 0.83, green: 0.24, blue: 0.22)
+    static let statusNeverChecked   = Color(red: 0.48, green: 0.36, blue: 0.79)  // violet — distinct from overdue red
     static let statusNoExpiry       = Color.secondary
 
     // MARK: Surfaces

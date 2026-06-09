@@ -3,8 +3,8 @@
 //  MyInventory
 //
 //  Root three-column NavigationSplitView (Dev Plan §6.5):
-//   • Sidebar  — the three contexts (+ Settings)
-//   • Content  — selected context's categories → items (overdue pinned)
+//   • Sidebar  — Needs Attention + the contexts (+ Settings)
+//   • Content  — the attention list, or a context's categories → items
 //   • Detail   — the selected item
 //
 //  On iPhone / narrow multitasking this collapses to a single nav stack for free.
@@ -12,6 +12,12 @@
 
 import SwiftUI
 import SwiftData
+
+/// What the sidebar can select: the cross-context attention list, or one context.
+enum SidebarSelection: Hashable {
+    case attention
+    case context(SupplyContext)
+}
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
@@ -22,7 +28,7 @@ struct ContentView: View {
     @Query(sort: \SupplyContext.sortOrder) private var contexts: [SupplyContext]
     @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
 
-    @State private var selectedContext: SupplyContext?
+    @State private var sidebarSelection: SidebarSelection?
     @State private var selectedItem: SupplyItem?
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -67,14 +73,24 @@ struct ContentView: View {
             if isUITesting { seedUITestSample() }
             // Under UI testing, stay on the sidebar so the global search is reachable
             // at launch; in production, jump straight into the first context.
-            if selectedContext == nil && !isUITesting { selectedContext = contexts.first }
+            if sidebarSelection == nil && !isUITesting, let first = contexts.first {
+                sidebarSelection = .context(first)
+            }
             await refreshNotifications()
+            // A notification tap may have cold-started the app before this view
+            // existed — consume any deep link that's already waiting.
+            handleDeepLink(notifications.pendingDeepLink)
         }
         .onChange(of: contexts) { _, newValue in
-            if selectedContext == nil && !isUITesting { selectedContext = newValue.first }
+            if sidebarSelection == nil && !isUITesting, let first = newValue.first {
+                sidebarSelection = .context(first)
+            }
         }
-        .onChange(of: selectedContext) { _, _ in
-            selectedItem = nil   // item from another context no longer applies
+        .onChange(of: sidebarSelection) { _, _ in
+            selectedItem = nil   // item from another list no longer applies
+        }
+        .onChange(of: notifications.pendingDeepLink) { _, link in
+            handleDeepLink(link)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -90,14 +106,16 @@ struct ContentView: View {
             if isSearching {
                 globalSearchResults
             } else {
-                contextList
+                sidebarList
             }
         }
         .navigationTitle("MyInventory")
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
                     prompt: "Search all supplies")
         .task(id: searchText) {
-            try? await Task.sleep(for: .milliseconds(250))
+            // On cancellation (a newer keystroke) bail out — otherwise the body
+            // would fall through and write immediately, defeating the debounce.
+            guard (try? await Task.sleep(for: .milliseconds(250))) != nil else { return }
             debouncedSearch = searchText
         }
         .toolbar {
@@ -121,7 +139,14 @@ struct ContentView: View {
         // iPad regardless of how the split view is collapsed.
         .sheet(item: $searchResultItem) { item in
             NavigationStack {
-                ItemDetailView(item: item, onDelete: { searchResultItem = nil })
+                ItemDetailView(item: item, onDelete: {
+                    // The same item may also be selected in the detail column —
+                    // leaving it there would re-render a deleted model (crash).
+                    if selectedItem?.persistentModelID == item.persistentModelID {
+                        selectedItem = nil
+                    }
+                    searchResultItem = nil
+                })
             }
         }
         .alert("New Context", isPresented: $showingAddContext) {
@@ -164,16 +189,24 @@ struct ContentView: View {
         }
     }
 
-    private var contextList: some View {
-        List(selection: $selectedContext) {
+    private var sidebarList: some View {
+        List(selection: $sidebarSelection) {
+            Section {
+                AttentionSidebarRow(count: attentionCount)
+                    .tag(SidebarSelection.attention)
+            }
             Section("Supplies") {
                 ForEach(contexts) { context in
                     ContextSidebarRow(context: context)
-                        .tag(context)
+                        .tag(SidebarSelection.context(context))
                 }
                 .onDelete(perform: requestDeleteContext)
             }
         }
+    }
+
+    private var attentionCount: Int {
+        allItems.filter { $0.status(leadTimeDays: settings.globalLeadTimeDays).isAttention }.count
     }
 
     // MARK: Global search
@@ -213,10 +246,13 @@ struct ContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let selectedContext {
-            ContextListView(context: selectedContext, selectedItem: $selectedItem)
-                .id(selectedContext.persistentModelID)
-        } else {
+        switch sidebarSelection {
+        case .attention:
+            AttentionListView(selectedItem: $selectedItem)
+        case .context(let context):
+            ContextListView(context: context, selectedItem: $selectedItem)
+                .id(context.persistentModelID)
+        case nil:
             ContentUnavailableView(
                 "Select a context",
                 systemImage: "square.grid.2x2",
@@ -259,12 +295,31 @@ struct ContentView: View {
         try? SeedData.seedUITestSampleIfNeeded(in: modelContext)
     }
 
+    // MARK: Deep links (notification taps)
+
+    private func handleDeepLink(_ link: NotificationManager.DeepLink?) {
+        guard let link else { return }
+        notifications.pendingDeepLink = nil
+        switch link {
+        case .attention:
+            sidebarSelection = .attention
+        case .item(let uuid):
+            if let item = allItems.first(where: { $0.uuid == uuid }) {
+                searchResultItem = item
+            }
+        }
+    }
+
     // MARK: Context management
 
     private func addContext() {
         let trimmed = newContextName.trimmingCharacters(in: .whitespacesAndNewlines)
         newContextName = ""
         guard !trimmed.isEmpty else { return }
+        guard !contexts.contains(where: { $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }) else {
+            contextActionError = "A context named “\(trimmed)” already exists."
+            return
+        }
         let nextOrder = (contexts.map(\.sortOrder).max() ?? -1) + 1
         let context = SupplyContext(name: trimmed, sortOrder: nextOrder)
         modelContext.insert(context)
@@ -306,8 +361,9 @@ struct ContentView: View {
             return
         }
 
-        if selectedContext?.persistentModelID == context.persistentModelID {
-            selectedContext = nil
+        if case .context(let selected) = sidebarSelection,
+           selected.persistentModelID == context.persistentModelID {
+            sidebarSelection = nil
             selectedItem = nil
         }
         // Reminders for the now-deleted items must be cancelled and the rest refreshed.
@@ -324,7 +380,42 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Sidebar row
+// MARK: - Sidebar rows
+
+private struct AttentionSidebarRow: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: Theme.spacing6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Theme.statusOverdue.opacity(0.12))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.statusOverdue)
+            }
+
+            Text("Needs Attention")
+
+            Spacer()
+
+            if count > 0 {
+                Text("\(count)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.statusOverdue, in: Capsule())
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Theme.statusOK)
+                    .imageScale(.small)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
 
 private struct ContextSidebarRow: View {
     let context: SupplyContext
@@ -337,14 +428,15 @@ private struct ContextSidebarRow: View {
     }
 
     var body: some View {
+        let brand = SeedData.color(forContextNamed: context.name)
         HStack(spacing: Theme.spacing6) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Theme.accentSoft)
+                    .fill(brand.opacity(0.14))
                     .frame(width: 36, height: 36)
                 Image(systemName: SeedData.symbol(forContextNamed: context.name))
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+                    .foregroundStyle(brand)
             }
 
             Text(context.name)

@@ -9,6 +9,7 @@
 
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 import UserNotifications
 
 struct SettingsView: View {
@@ -20,6 +21,11 @@ struct SettingsView: View {
     // Remembers the last non-zero interval so toggling off then on restores it (M2).
     @State private var lastIntervalMonths: Int = 12
 
+    // Export
+    @State private var exportDocument: JSONExportDocument?
+    @State private var isExporting = false
+    @State private var exportError: String?
+
     var body: some View {
         @Bindable var settings = settings
 
@@ -29,10 +35,15 @@ struct SettingsView: View {
                     LabeledContent("Advance warning",
                                    value: "\(settings.globalLeadTimeDays) day\(settings.globalLeadTimeDays == 1 ? "" : "s")")
                 }
+                Picker("Reminder time", selection: $settings.notificationFireHour) {
+                    ForEach(0..<24, id: \.self) { hour in
+                        Text(hourLabel(hour)).tag(hour)
+                    }
+                }
             } header: {
                 Text("Reminders")
             } footer: {
-                Text("How many days before an item's due date it counts as “due soon” and triggers an early reminder. Items can override this individually.")
+                Text("How many days before an item's due date it counts as “due soon” and triggers an early reminder, and the time of day reminders arrive. Items can override the warning individually.")
             }
 
             Section {
@@ -73,10 +84,15 @@ struct SettingsView: View {
 
             Section {
                 LabeledContent("iCloud sync", value: "Local only")
+                Button {
+                    exportData()
+                } label: {
+                    Label("Export All Data…", systemImage: "square.and.arrow.up")
+                }
             } header: {
-                Text("Sync")
+                Text("Sync & Backup")
             } footer: {
-                Text("Your data is stored privately on this device. Cross-device iCloud sync is planned for a later version.")
+                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. Export saves a JSON backup of every context, item, and check (photos aren't included).")
             }
 
             Section("About") {
@@ -99,6 +115,27 @@ struct SettingsView: View {
         }
         .onChange(of: settings.globalLeadTimeDays) { _, _ in
             rescheduleNotifications()
+        }
+        .onChange(of: settings.notificationFireHour) { _, _ in
+            rescheduleNotifications()   // re-add every pending request at the new hour
+        }
+        .fileExporter(
+            isPresented: $isExporting,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: DataExporter.defaultFilename()
+        ) { result in
+            if case .failure(let error) = result {
+                exportError = error.localizedDescription
+            }
+        }
+        .alert("Export failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            if let exportError { Text(exportError) }
         }
     }
 
@@ -133,6 +170,12 @@ struct SettingsView: View {
         return "\(months) month\(months == 1 ? "" : "s")"
     }
 
+    /// "9:00 AM" / "21:00" matching the user's locale.
+    private func hourLabel(_ hour: Int) -> String {
+        let date = Calendar.current.date(from: DateComponents(hour: hour)) ?? .now
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
     private var authStatusText: String {
         switch notifications.authorizationStatus {
         case .authorized: return "Allowed"
@@ -162,6 +205,15 @@ struct SettingsView: View {
 
     private func rescheduleNotifications() {
         notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
+    }
+
+    private func exportData() {
+        do {
+            exportDocument = JSONExportDocument(data: try DataExporter.makeExport(from: modelContext))
+            isExporting = true
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 }
 

@@ -36,6 +36,8 @@ struct ItemEditView: View {
     @State private var intervalMonths: Int
     @State private var useDefaultLead: Bool
     @State private var leadDays: Int
+    @State private var trackQuantity: Bool
+    @State private var quantity: Int
     @State private var location: String
     @State private var photoData: Data?
 
@@ -62,6 +64,8 @@ struct ItemEditView: View {
             _intervalMonths = State(initialValue: 12)
             _useDefaultLead = State(initialValue: true)
             _leadDays = State(initialValue: 7)   // updated in applyDefaultsIfNeeded
+            _trackQuantity = State(initialValue: false)
+            _quantity = State(initialValue: 1)
             _location = State(initialValue: "")
             _photoData = State(initialValue: nil)
         case .edit(let item):
@@ -72,6 +76,8 @@ struct ItemEditView: View {
             _intervalMonths = State(initialValue: item.checkIntervalMonths ?? 12)
             _useDefaultLead = State(initialValue: item.leadTimeDaysOverride == nil)
             _leadDays = State(initialValue: item.leadTimeDaysOverride ?? 7)  // updated in applyDefaultsIfNeeded
+            _trackQuantity = State(initialValue: item.quantity != nil)
+            _quantity = State(initialValue: item.quantity ?? 1)
             _location = State(initialValue: item.storageLocation ?? "")
             _photoData = State(initialValue: item.photo)
         }
@@ -83,6 +89,7 @@ struct ItemEditView: View {
             placementSection
             intervalSection
             leadSection
+            quantitySection
             locationSection
             photoSection
         }
@@ -218,6 +225,21 @@ struct ItemEditView: View {
         .disabled(!hasInterval)
     }
 
+    private var quantitySection: some View {
+        Section {
+            Toggle("Track quantity", isOn: $trackQuantity)
+            if trackQuantity {
+                Stepper(value: $quantity, in: 1...9999) {
+                    LabeledContent("On hand", value: "\(quantity)")
+                }
+            }
+        } header: {
+            Text("Quantity (optional)")
+        } footer: {
+            Text("How many you keep (e.g. 4 batteries). You can update it whenever you log a check.")
+        }
+    }
+
     private var locationSection: some View {
         Section("Storage location (optional)") {
             TextField("e.g. Garage shelf 2", text: $location)
@@ -318,6 +340,19 @@ struct ItemEditView: View {
     private func addCategory() {
         let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let context = selectedContext else { return }
+        guard trimmed.compare(SupplyCategory.uncategorizedName, options: .caseInsensitive) != .orderedSame else {
+            saveError = "“\(SupplyCategory.uncategorizedName)” is reserved for items whose category was deleted."
+            newCategoryName = ""
+            return
+        }
+        if let existing = categoriesForSelectedContext.first(where: {
+            $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame
+        }) {
+            // Same name already exists — just select it instead of erroring.
+            selectedCategory = existing
+            newCategoryName = ""
+            return
+        }
         let nextOrder = (categoriesForSelectedContext.map(\.sortOrder).max() ?? -1) + 1
         let category = SupplyCategory(name: trimmed, sortOrder: nextOrder)
         category.context = context
@@ -344,6 +379,7 @@ struct ItemEditView: View {
             let item = SupplyItem(name: trimmedName, checkIntervalMonths: interval)
             item.category = selectedCategory
             item.leadTimeDaysOverride = leadOverride
+            item.quantity = trackQuantity ? quantity : nil
             item.storageLocation = trimmedLocation.isEmpty ? nil : trimmedLocation
             item.photo = photoData
             modelContext.insert(item)
@@ -359,8 +395,12 @@ struct ItemEditView: View {
             item.category = selectedCategory
             item.checkIntervalMonths = interval
             item.leadTimeDaysOverride = leadOverride
+            item.quantity = trackQuantity ? quantity : nil
             item.storageLocation = trimmedLocation.isEmpty ? nil : trimmedLocation
-            item.photo = photoData
+            // Don't rewrite the externally-stored blob when the photo is unchanged.
+            if item.photo != photoData {
+                item.photo = photoData
+            }
             do {
                 try modelContext.save()
             } catch {
