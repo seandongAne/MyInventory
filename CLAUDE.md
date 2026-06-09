@@ -65,17 +65,25 @@ App shell
   `NotificationManager.shared.configure(container:settings:)`.
 - `ContentView.swift` — root `NavigationSplitView`; sidebar = Needs Attention row +
   context list; **app-wide search** (`.searchable` → `FuzzySearch` over all items →
-  tap opens detail sheet); **add/delete context** (orphan-safe `deleteContext`, keeps
-  ≥1 context, duplicate names rejected); first-launch seeding + notification refresh
-  on appear/foreground; **notification deep links** (`NotificationManager.pendingDeepLink`
-  → item sheet or attention view). Deleting an item from the search sheet also clears
-  a matching `selectedItem` (zombie-model crash guard).
+  tap opens detail sheet); **add/rename/delete context** (rename + delete via the
+  row's long-press menu — swipe on a split-view sidebar is unreliable; orphan-safe
+  `deleteContext`, keeps ≥1 context, duplicate names rejected; rename reschedules
+  notifications since bodies embed the context name); first-launch seeding +
+  notification refresh on appear/foreground; **notification deep links**
+  (`NotificationManager.pendingDeepLink` → item sheet or attention view). Deleting an
+  item from the search sheet also clears a matching `selectedItem` (zombie-model
+  crash guard). **Launch landing** (`applyInitialSidebarSelection`): iPad opens the
+  first context; iPhone lands on Needs Attention when something is due, else stays
+  on the sidebar (never hide search/overview behind a Back button); UI tests always
+  stay on the sidebar.
 
 Models (`Models/`, all `@Model`, CloudKit-safe — see invariants)
 - `SupplyContext.swift` — top-level place. `categories` → `.cascade`.
 - `SupplyCategory.swift` — group within a context. `items` → **`.nullify`** (deleting a
   category must not destroy items; app logic moves them to an "Uncategorized" bucket).
-  "Uncategorized" is a reserved name (creation blocked in UI).
+  "Uncategorized" is a reserved name (creation/rename-to blocked in UI);
+  `SupplyCategory.uncategorizedBucket(in:modelContext:)` is the shared find-or-create
+  used by both the delete-category flow and saving an item without a category.
 - `SupplyItem.swift` — a tracked supply. `checkIntervalMonths: Int?` (nil = never
   expires), `leadTimeDaysOverride: Int?` (nil = use global), `quantity: Int?` (nil =
   untracked; editable in CheckSheet too), `photo` (external storage), `checks` →
@@ -109,6 +117,8 @@ Services
 Support
 - `Support/AppModelContainer.swift` — shared `Result<ModelContainer, Error>` used by
   the app scene AND App Intents.
+- `Support/Haptics.swift` — `Haptics.success()` for actions that complete without a
+  visible UI change (quick check, bulk check, template apply, check save).
 - `Support/SettingsStore.swift` — `@Observable`, UserDefaults-backed: `globalLeadTimeDays`,
   `defaultIntervalMonths`, `notificationsRequested`, `notificationFireHour`.
 - `Support/FuzzySearch.swift` — dependency-free typo-tolerant ranking over
@@ -131,21 +141,36 @@ Support
 
 Views (`Views/`)
 - `AttentionListView.swift` — cross-context dashboard of every `isAttention` item,
-  most-urgent-first, with context›category breadcrumbs.
+  most-urgent-first, with context›category breadcrumbs. Items are actionable in
+  place: leading swipe / long-press = quick check, trailing swipe = delete (confirmed).
 - `ContextListView.swift` — content column: a context's categories → items (overdue
-  pinned), **per-context** search, add item / add-from-template / manage categories,
-  move/delete item, **"Mark All as Checked"** bulk action per category section.
+  pinned), **per-context** search, add item (toolbar `Menu(primaryAction:)` — tap goes
+  straight to Add Item, long-press offers templates) / manage categories, **quick
+  check** (leading swipe with full-swipe, or long-press "Mark as Checked" — mirrors
+  the notification action), move item, delete (trailing swipe or long-press, always
+  confirmed), **"Mark All as Checked"** bulk action per category section.
 - `ItemDetailView.swift` — detail column: status card, "Check now", details (incl.
-  quantity), check history; edit/delete. (`CheckHistoryCard` lives here.)
-- `ItemEditView.swift` — create/edit item form (name + context + category required;
-  interval/lead/quantity/location/photo optional). Photo via PhotosPicker or camera;
-  unchanged photos are not rewritten on save.
-- `CheckSheet.swift` — log a `CheckRecord`; backdate warning; optional quantity
-  update in the same save; reschedules notifications.
-- `CategoryManagerView.swift` — add/remove categories (duplicate + reserved names
-  rejected); delete-with-move flow to an Uncategorized bucket; move single items;
-  an EMPTY Uncategorized bucket may be deleted (recreated on demand).
-- `TemplatePickerView.swift` — applies a `SupplyTemplate` to the current context.
+  quantity), check history; Edit + a More menu (Move to Category / Delete Item).
+  **Check records are deletable** (long-press a history row, confirmed) — a mistaken
+  check pushes the due date out a full interval and must be correctable; deletion
+  reschedules notifications. (`CheckHistoryCard` lives here.)
+- `ItemEditView.swift` — create/edit item form (name + context required; category
+  OPTIONAL — "None" files the item under the Uncategorized bucket so the first item
+  is never blocked on taxonomy; interval/lead/quantity/location/photo optional).
+  Interval uses `PresetValuePicker` (1/3/6/12/24 months + custom). Photo via
+  PhotosPicker or camera; unchanged photos are not rewritten on save.
+- `CheckSheet.swift` — log a `CheckRecord` with result/date/comment; backdate
+  warning; optional quantity update in the same save; reschedules notifications.
+  (The quick-check affordances cover the common "all good" case; this sheet is for
+  everything else.)
+- `CategoryManagerView.swift` — add/rename/remove categories (duplicate + reserved
+  names rejected; rename/delete also on the row's long-press menu; the Uncategorized
+  bucket can't be renamed); delete-with-move flow to an Uncategorized bucket; move
+  single items; an EMPTY Uncategorized bucket may be deleted (recreated on demand).
+- `TemplatePickerView.swift` — applies a `SupplyTemplate` to the current context;
+  success = haptic + immediate dismiss (the new items appearing IS the confirmation).
+- `PresetValuePicker.swift` — menu Picker over preset values + Custom stepper mode;
+  use it instead of a bare Stepper for any value users would tap dozens of times.
 - `SettingsView.swift` — lead time, reminder hour, default interval, notification
   permission + failure surface, JSON export, sync status (Local only).
 - `CameraCapture.swift` — `UIImagePickerController` wrapper (camera). Needs
@@ -191,6 +216,14 @@ Widget (`MyInventoryWidgets/`, separate appex target)
 - **Selection must never outlive a deleted model** — when deleting an item/context from
   any path, clear every `@State` that may reference it (see ContentView's search-sheet
   `onDelete`).
+- **Destructive actions always confirm** — items, contexts, categories-with-items, and
+  check records all route through a confirmationDialog before deletion, from every
+  entry point (toolbar, swipe, long-press menu). Never wire a long-press menu Delete
+  straight to the mutation.
+- **Quick check is the primary check flow** — leading swipe / long-press "Mark as
+  Checked" logs an OK check (with `Haptics.success()`); the CheckSheet is for
+  non-OK results, backdating, notes, and quantity updates. New list surfaces showing
+  items should offer the same affordances.
 - Debounce pattern: `task(id:)` + `guard (try? await Task.sleep(...)) != nil else { return }`
   — a bare `try?` would fall through on cancellation and defeat the debounce.
 - Design values come from `Theme`; cards via `.cardStyle()`; status via `StatusBadge` /

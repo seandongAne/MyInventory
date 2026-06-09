@@ -19,7 +19,7 @@ struct TemplatePickerView: View {
     @Environment(NotificationManager.self) private var notifications
 
     @State private var applyError: String?
-    @State private var appliedSummary: String?
+    @State private var nothingToAddMessage: String?
 
     var body: some View {
         List {
@@ -61,13 +61,13 @@ struct TemplatePickerView: View {
         } message: {
             if let applyError { Text(applyError) }
         }
-        .alert("Template added", isPresented: Binding(
-            get: { appliedSummary != nil },
-            set: { if !$0 { appliedSummary = nil; dismiss() } }
+        .alert("Nothing to add", isPresented: Binding(
+            get: { nothingToAddMessage != nil },
+            set: { if !$0 { nothingToAddMessage = nil } }
         )) {
-            Button("Done") { appliedSummary = nil; dismiss() }
+            Button("OK", role: .cancel) { nothingToAddMessage = nil }
         } message: {
-            if let appliedSummary { Text(appliedSummary) }
+            if let nothingToAddMessage { Text(nothingToAddMessage) }
         }
     }
 
@@ -78,16 +78,23 @@ struct TemplatePickerView: View {
     }
 
     private func apply(_ template: SupplyTemplate) {
+        let added: Int
         do {
-            let added = try Templates.apply(template, to: context, in: modelContext)
-            appliedSummary = added == 0
-                ? "Everything in this template already exists in \(context.name)."
-                : "Added \(added) item\(added == 1 ? "" : "s") to \(context.name)."
+            added = try Templates.apply(template, to: context, in: modelContext)
         } catch {
             modelContext.rollback()
             applyError = error.localizedDescription
             return
         }
+        guard added > 0 else {
+            // Nothing visibly changes in this rare case, so it needs saying.
+            nothingToAddMessage = "Everything in this template already exists in \(context.name)."
+            return
+        }
         notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
+        Haptics.success()
+        // The added items appearing in the list behind IS the confirmation —
+        // no extra "Done" tap.
+        dismiss()
     }
 }

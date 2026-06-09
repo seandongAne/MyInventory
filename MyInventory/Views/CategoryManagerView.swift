@@ -20,6 +20,8 @@ struct CategoryManagerView: View {
 
     @State private var showingAddAlert = false
     @State private var newName = ""
+    @State private var categoryToRename: SupplyCategory?
+    @State private var renameName = ""
     @State private var saveError: String?
 
     // Delete-with-move flow
@@ -74,6 +76,14 @@ struct CategoryManagerView: View {
             TextField("Category name", text: $newName)
             Button("Add") { addCategory() }
             Button("Cancel", role: .cancel) { newName = "" }
+        }
+        .alert("Rename Category", isPresented: Binding(
+            get: { categoryToRename != nil },
+            set: { if !$0 { categoryToRename = nil } }
+        )) {
+            TextField("Name", text: $renameName)
+            Button("Save") { renameCategory() }
+            Button("Cancel", role: .cancel) { categoryToRename = nil }
         }
         .alert("Could not save", isPresented: Binding(
             get: { saveError != nil },
@@ -133,6 +143,25 @@ struct CategoryManagerView: View {
             }
         }
         .deleteDisabled(category.isUncategorized && !items.isEmpty)
+        .contextMenu {
+            // The Uncategorized bucket's identity IS its name — renaming it would
+            // silently detach the fallback semantics, so it can't be renamed.
+            if !category.isUncategorized {
+                Button {
+                    renameName = category.name
+                    categoryToRename = category
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+            if !(category.isUncategorized && !items.isEmpty) {
+                Button(role: .destructive) {
+                    requestDelete(category)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
     }
 
     // MARK: Sheets
@@ -256,8 +285,10 @@ struct CategoryManagerView: View {
 
     private func initiateDelete(_ offsets: IndexSet) {
         guard let index = offsets.first else { return }
-        let category = categories[index]
+        requestDelete(categories[index])
+    }
 
+    private func requestDelete(_ category: SupplyCategory) {
         // Uncategorized with items: deletion is disabled at the row level. An
         // EMPTY Uncategorized is safe to delete (it's recreated on demand), and
         // falls through to the empty-category path below — no silent no-op.
@@ -273,6 +304,27 @@ struct CategoryManagerView: View {
             moveDestination = nil
             showingMoveSheet = true
         }
+    }
+
+    private func renameCategory() {
+        guard let category = categoryToRename else { return }
+        categoryToRename = nil
+        let trimmed = renameName.trimmingCharacters(in: .whitespacesAndNewlines)
+        renameName = ""
+        guard !trimmed.isEmpty, trimmed != category.name else { return }
+        guard trimmed.compare(SupplyCategory.uncategorizedName, options: .caseInsensitive) != .orderedSame else {
+            saveError = "“\(SupplyCategory.uncategorizedName)” is reserved for items whose category was deleted."
+            return
+        }
+        guard !categories.contains(where: {
+            $0.persistentModelID != category.persistentModelID
+            && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame
+        }) else {
+            saveError = "A category named “\(trimmed)” already exists in \(context.name)."
+            return
+        }
+        category.name = trimmed
+        save()
     }
 
     private func confirmDelete() {
@@ -321,13 +373,6 @@ struct CategoryManagerView: View {
     }
 
     private func uncategorizedBucket() -> SupplyCategory {
-        if let existing = categories.first(where: { $0.isUncategorized }) {
-            return existing
-        }
-        let nextOrder = (categories.map(\.sortOrder).max() ?? -1) + 1
-        let bucket = SupplyCategory(name: SupplyCategory.uncategorizedName, sortOrder: nextOrder)
-        bucket.context = context
-        modelContext.insert(bucket)
-        return bucket
+        SupplyCategory.uncategorizedBucket(in: context, modelContext: modelContext)
     }
 }

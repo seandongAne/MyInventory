@@ -27,6 +27,7 @@ struct ContextListView: View {
     @State private var showingCategoryManager = false
     @State private var showingTemplates = false
     @State private var bulkCheckCategory: SupplyCategory?
+    @State private var itemPendingDeletion: SupplyItem?
     @State private var actionError: String?
 
     var body: some View {
@@ -49,6 +50,8 @@ struct ContextListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                // primaryAction keeps the common path one tap: tap = Add Item,
+                // long-press reveals the template option.
                 Menu {
                     Button { showingAddItem = true } label: {
                         Label("Add Item", systemImage: "plus")
@@ -58,6 +61,8 @@ struct ContextListView: View {
                     }
                 } label: {
                     Label("Add", systemImage: "plus")
+                } primaryAction: {
+                    showingAddItem = true
                 }
             }
             ToolbarItem(placement: .topBarLeading) {
@@ -98,6 +103,24 @@ struct ContextListView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Logs an OK check for every item, resetting each re-check countdown.")
+        }
+        .confirmationDialog(
+            "Delete “\(itemPendingDeletion?.name ?? "")”?",
+            isPresented: Binding(
+                get: { itemPendingDeletion != nil },
+                set: { if !$0 { itemPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let item = itemPendingDeletion {
+                    itemPendingDeletion = nil
+                    deleteItem(item)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the item and its full check history.")
         }
         .alert("Action failed", isPresented: Binding(
             get: { actionError != nil },
@@ -228,11 +251,33 @@ struct ContextListView: View {
                                   bottom: Theme.spacing2, trailing: Theme.spacing8))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+        // The most frequent action — "looked at it, all good" — is one swipe,
+        // mirroring the notification's Mark-as-Checked action.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                quickCheck(item)
+            } label: {
+                Label("Checked", systemImage: "checkmark.circle.fill")
+            }
+            .tint(Theme.statusOK)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                itemPendingDeletion = item
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
         .contextMenu { itemContextMenu(item) }
     }
 
     @ViewBuilder
     private func itemContextMenu(_ item: SupplyItem) -> some View {
+        Button {
+            quickCheck(item)
+        } label: {
+            Label("Mark as Checked", systemImage: "checkmark.circle")
+        }
         let otherCategories = categories.filter {
             $0.persistentModelID != item.category?.persistentModelID
         }
@@ -250,8 +295,10 @@ struct ContextListView: View {
             }
         }
         Divider()
+        // Destructive: routes through the same confirmation as everywhere else —
+        // never delete an item (and its history) straight off a long-press.
         Button(role: .destructive) {
-            deleteItem(item)
+            itemPendingDeletion = item
         } label: {
             Label("Delete", systemImage: "trash")
         }
@@ -327,6 +374,23 @@ struct ContextListView: View {
         rescheduleNotifications()
     }
 
+    /// One-swipe "looked at it, all good" — logs an OK check without the sheet.
+    /// (For a different result or a note, open the item and use "Check now".)
+    private func quickCheck(_ item: SupplyItem) {
+        let record = CheckRecord(date: .now, result: .ok)
+        record.item = item
+        modelContext.insert(record)
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            actionError = error.localizedDescription
+            return
+        }
+        Haptics.success()
+        rescheduleNotifications()
+    }
+
     /// Logs an OK check for every item in the category — the "I went through the
     /// whole emergency kit" flow. One save; rolled back atomically on failure.
     private func bulkCheck(_ category: SupplyCategory) {
@@ -344,6 +408,7 @@ struct ContextListView: View {
             actionError = error.localizedDescription
             return
         }
+        Haptics.success()
         rescheduleNotifications()
     }
 

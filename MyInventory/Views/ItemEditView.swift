@@ -170,7 +170,7 @@ struct ItemEditView: View {
             }
 
             Picker("Category", selection: $selectedCategory) {
-                Text("None").tag(nil as SupplyCategory?)
+                Text("None (Uncategorized)").tag(nil as SupplyCategory?)
                 ForEach(categoriesForSelectedContext) { category in
                     Text(category.name).tag(category as SupplyCategory?)
                 }
@@ -186,8 +186,10 @@ struct ItemEditView: View {
         } header: {
             Text("Placement")
         } footer: {
+            // A category is organization, not a prerequisite — never block the
+            // user's first item on an information-architecture decision.
             if selectedContext != nil && selectedCategory == nil {
-                Text("Select or create a category to save this item.")
+                Text("Without a category, this item is filed under Uncategorized — you can sort it later.")
             }
         }
     }
@@ -196,9 +198,9 @@ struct ItemEditView: View {
         Section {
             Toggle("Set a re-check interval", isOn: $hasInterval)
             if hasInterval {
-                Stepper(value: $intervalMonths, in: 1...240) {
-                    LabeledContent("Every", value: intervalDescription)
-                }
+                PresetValuePicker("Every", value: $intervalMonths,
+                                  presets: [1, 3, 6, 12, 24], range: 1...240,
+                                  format: monthsLabel)
             }
         } header: {
             Text("Re-check interval")
@@ -299,8 +301,9 @@ struct ItemEditView: View {
             .filter { $0.context?.persistentModelID == selectedContext.persistentModelID }
     }
 
-    private var intervalDescription: String {
-        let months = intervalMonths
+    private var intervalDescription: String { monthsLabel(intervalMonths) }
+
+    private func monthsLabel(_ months: Int) -> String {
         if months % 12 == 0 {
             let years = months / 12
             return "\(years) year\(years == 1 ? "" : "s")"
@@ -311,7 +314,6 @@ struct ItemEditView: View {
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && selectedContext != nil
-        && selectedCategory != nil
     }
 
     // MARK: Actions
@@ -369,15 +371,20 @@ struct ItemEditView: View {
     }
 
     private func save() {
+        guard let context = selectedContext else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLocation = location.trimmingCharacters(in: .whitespacesAndNewlines)
         let interval = hasInterval ? intervalMonths : nil
         let leadOverride = useDefaultLead ? nil : leadDays
+        // No category chosen → file under the context's Uncategorized bucket
+        // (created in the same save, rolled back together on failure).
+        let category = selectedCategory
+            ?? SupplyCategory.uncategorizedBucket(in: context, modelContext: modelContext)
 
         switch mode {
         case .create:
             let item = SupplyItem(name: trimmedName, checkIntervalMonths: interval)
-            item.category = selectedCategory
+            item.category = category
             item.leadTimeDaysOverride = leadOverride
             item.quantity = trackQuantity ? quantity : nil
             item.storageLocation = trimmedLocation.isEmpty ? nil : trimmedLocation
@@ -392,7 +399,7 @@ struct ItemEditView: View {
             }
         case .edit(let item):
             item.name = trimmedName
-            item.category = selectedCategory
+            item.category = category
             item.checkIntervalMonths = interval
             item.leadTimeDaysOverride = leadOverride
             item.quantity = trackQuantity ? quantity : nil

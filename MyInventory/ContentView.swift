@@ -12,6 +12,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 /// What the sidebar can select: the cross-context attention list, or one context.
 enum SidebarSelection: Hashable {
@@ -40,9 +41,11 @@ struct ContentView: View {
     @State private var debouncedSearch = ""
     @State private var searchResultItem: SupplyItem?
 
-    // Add / delete top-level contexts (Vehicle/Bag/House and any the user adds).
+    // Add / rename / delete top-level contexts (Vehicle/Bag/House and any the user adds).
     @State private var showingAddContext = false
     @State private var newContextName = ""
+    @State private var contextPendingRename: SupplyContext?
+    @State private var renameContextName = ""
     @State private var contextPendingDeletion: SupplyContext?
     @State private var contextActionError: String?
 
@@ -71,20 +74,14 @@ struct ContentView: View {
         .task {
             seedContexts()
             if isUITesting { seedUITestSample() }
-            // Under UI testing, stay on the sidebar so the global search is reachable
-            // at launch; in production, jump straight into the first context.
-            if sidebarSelection == nil && !isUITesting, let first = contexts.first {
-                sidebarSelection = .context(first)
-            }
+            applyInitialSidebarSelection()
             await refreshNotifications()
             // A notification tap may have cold-started the app before this view
             // existed — consume any deep link that's already waiting.
             handleDeepLink(notifications.pendingDeepLink)
         }
-        .onChange(of: contexts) { _, newValue in
-            if sidebarSelection == nil && !isUITesting, let first = newValue.first {
-                sidebarSelection = .context(first)
-            }
+        .onChange(of: contexts) { _, _ in
+            applyInitialSidebarSelection()
         }
         .onChange(of: sidebarSelection) { _, _ in
             selectedItem = nil   // item from another list no longer applies
@@ -156,6 +153,14 @@ struct ContentView: View {
         } message: {
             Text("Add a top-level place for your supplies, alongside Vehicle, Bag, and House.")
         }
+        .alert("Rename Context", isPresented: Binding(
+            get: { contextPendingRename != nil },
+            set: { if !$0 { contextPendingRename = nil } }
+        )) {
+            TextField("Name", text: $renameContextName)
+            Button("Save") { renameContext() }
+            Button("Cancel", role: .cancel) { contextPendingRename = nil }
+        }
         .confirmationDialog(
             "Delete “\(contextPendingDeletion?.name ?? "")”?",
             isPresented: Binding(
@@ -199,9 +204,39 @@ struct ContentView: View {
                 ForEach(contexts) { context in
                     ContextSidebarRow(context: context)
                         .tag(SidebarSelection.context(context))
+                        // Long-press menu: more discoverable AND more reliable
+                        // than swipe on a split-view sidebar row (swipes there
+                        // often register as selection).
+                        .contextMenu {
+                            Button {
+                                renameContextName = context.name
+                                contextPendingRename = context
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                requestDeleteContext(context)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                 }
                 .onDelete(perform: requestDeleteContext)
             }
+        }
+    }
+
+    /// First-launch landing. iPad has room for all three columns, so it opens
+    /// the first context. On iPhone (collapsed navigation) auto-pushing a
+    /// context would hide the search field and the attention overview behind a
+    /// Back button — so land on Needs Attention when something is due, else
+    /// stay on the sidebar. UI tests always stay on the sidebar.
+    private func applyInitialSidebarSelection() {
+        guard sidebarSelection == nil, !isUITesting else { return }
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            if let first = contexts.first { sidebarSelection = .context(first) }
+        } else if attentionCount > 0 {
+            sidebarSelection = .attention
         }
     }
 
@@ -333,7 +368,10 @@ struct ContentView: View {
 
     private func requestDeleteContext(_ offsets: IndexSet) {
         guard let index = offsets.first else { return }
-        let context = contexts[index]
+        requestDeleteContext(contexts[index])
+    }
+
+    private func requestDeleteContext(_ context: SupplyContext) {
         // Keep at least one context: the app always needs somewhere to put supplies,
         // and it stops the first-launch defaults from being re-seeded over an empty store.
         guard contexts.count > 1 else {
@@ -341,6 +379,31 @@ struct ContentView: View {
             return
         }
         contextPendingDeletion = context
+    }
+
+    private func renameContext() {
+        guard let context = contextPendingRename else { return }
+        contextPendingRename = nil
+        let trimmed = renameContextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        renameContextName = ""
+        guard !trimmed.isEmpty, trimmed != context.name else { return }
+        guard !contexts.contains(where: {
+            $0.persistentModelID != context.persistentModelID
+            && $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame
+        }) else {
+            contextActionError = "A context named “\(trimmed)” already exists."
+            return
+        }
+        context.name = trimmed
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            contextActionError = error.localizedDescription
+            return
+        }
+        // Notification bodies embed the context name — refresh them.
+        notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 
     private func deleteContext(_ context: SupplyContext) {

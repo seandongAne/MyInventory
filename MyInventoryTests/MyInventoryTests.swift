@@ -423,6 +423,43 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(supplyCtx.allItems.count, Templates.vehicleKit.itemCount)
     }
 
+    // MARK: - Uncategorized bucket (shared find-or-create)
+
+    func testUncategorizedBucketIsCreatedOnceAndReused() throws {
+        let supplyCtx = SupplyContext(name: "Vehicle", sortOrder: 0)
+        context.insert(supplyCtx)
+        try context.save()
+
+        let first = SupplyCategory.uncategorizedBucket(in: supplyCtx, modelContext: context)
+        try context.save()
+        let second = SupplyCategory.uncategorizedBucket(in: supplyCtx, modelContext: context)
+
+        XCTAssertTrue(first.isUncategorized)
+        XCTAssertEqual(first.persistentModelID, second.persistentModelID)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SupplyCategory>()), 1)
+    }
+
+    // MARK: - Check deletion (mistaken check must be correctable)
+
+    func testDeletingLatestCheckRestoresPreviousDueDate() throws {
+        let now = Date.now
+        let item = makeItem(intervalMonths: 6)
+        let olderDate = cal.date(byAdding: .month, value: -2, to: now)!
+        addCheck(item, date: olderDate)
+        addCheck(item, date: now)   // the mistaken check
+        XCTAssertEqual(item.lastCheck!.date.timeIntervalSince1970,
+                       now.timeIntervalSince1970, accuracy: 1)
+
+        context.delete(item.lastCheck!)
+        try context.save()
+
+        // Status/due date derive from lastCheck, so deleting the mistaken check
+        // falls straight back to the older one — nothing else to fix up.
+        XCTAssertEqual(item.lastCheck!.date.timeIntervalSince1970,
+                       olderDate.timeIntervalSince1970, accuracy: 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<CheckRecord>()), 1)
+    }
+
     // MARK: - Uncategorized move (model level)
 
     func testMovingItemToBucketEmptiesSourceCategory() throws {
