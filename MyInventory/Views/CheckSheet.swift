@@ -50,7 +50,12 @@ struct CheckSheet: View {
             Section("Result") {
                 Picker("Result", selection: $result) {
                     ForEach(CheckResult.allCases) { result in
-                        Label(result.rawValue, systemImage: result.systemImage).tag(result)
+                        Label {
+                            Text(result.rawValue)
+                        } icon: {
+                            Image(result.iconName).iconSized(20)
+                        }
+                        .tag(result)
                     }
                 }
                 .pickerStyle(.inline)

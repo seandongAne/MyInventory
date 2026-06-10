@@ -39,7 +39,7 @@ struct AttentionListView: View {
         Group {
             if rows.isEmpty {
                 ContentUnavailableView {
-                    Label("All caught up", systemImage: "checkmark.seal.fill")
+                    Label("All caught up", image: "icon-status-ok")
                 } description: {
                     Text("Nothing is overdue, flagged, or waiting on a first check.")
                 }

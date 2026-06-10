@@ -12,20 +12,31 @@ struct StatusBadge: View {
     let status: SupplyStatus
     var compact: Bool = false
 
+    /// System "Increase Contrast" (Settings → Accessibility → Display & Text
+    /// Size) switches the badge from tinted to a SOLID fill — no app-private
+    /// toggle; users who need it have already opted in device-wide.
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    /// `.neverExpires` always stays tinted: its neutral gray fill can't carry
+    /// 4:1 ink in light mode, and it's informational, not a signal state.
+    private var filled: Bool {
+        contrast == .increased && status != .neverExpires
+    }
+
     var body: some View {
         let s = status.style
         HStack(spacing: Theme.spacing2) {
-            Image(systemName: s.symbol)
-                .imageScale(.small)
+            Image(s.iconName)
+                .iconSized(11)
             if !compact {
                 Text(s.label)
                     .font(.caption.weight(.semibold))
             }
         }
-        .foregroundStyle(s.color)
+        .foregroundStyle(filled ? Theme.badgeInkOnFill : s.color)
         .padding(.horizontal, Theme.spacing4)
         .padding(.vertical, Theme.spacing2)
-        .background(s.color.opacity(0.14), in: Capsule())
+        .background(filled ? s.color : s.color.opacity(0.14), in: Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(s.label))
     }

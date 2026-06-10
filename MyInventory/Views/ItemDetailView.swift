@@ -312,8 +312,8 @@ struct CheckHistoryCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: Theme.spacing6) {
             // Status icon column
-            Image(systemName: check.result.systemImage)
-                .font(.system(size: 18, weight: .medium))
+            Image(check.result.iconName)
+                .iconSized(20)
                 .foregroundStyle(iconColor)
                 .frame(width: 28)
 

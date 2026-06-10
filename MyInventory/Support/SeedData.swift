@@ -56,16 +56,8 @@ enum SeedData {
         try context.save()
     }
 
-    /// SF Symbol for a context, matched by name (Dev Plan §6.3). Falls back to a
-    /// generic symbol for any future user-created context.
-    static func symbol(forContextNamed name: String) -> String {
-        switch name {
-        case "Vehicle": return "car.fill"
-        case "Bag": return "backpack.fill"
-        case "House": return "house.fill"
-        default: return "shippingbox.fill"
-        }
-    }
+    // Context icons live in Iconography.contextIconName(forContextNamed:) —
+    // custom template assets, single source of truth for identity icons.
 
     /// Brand color per context — used for sidebar icons and other accents.
     static func color(forContextNamed name: String) -> Color {

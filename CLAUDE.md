@@ -123,8 +123,8 @@ Support
   `defaultIntervalMonths`, `notificationsRequested`, `notificationFireHour`.
 - `Support/FuzzySearch.swift` — dependency-free typo-tolerant ranking over
   name/category/context/location/check-comments (exact > prefix > substring > Levenshtein).
-- `Support/SeedData.swift` — seeds the default contexts on first launch; symbols AND
-  brand colors per context (both used by the sidebar); `seedUITestSampleIfNeeded`.
+- `Support/SeedData.swift` — seeds the default contexts on first launch; brand colors
+  per context (context ICONS live in `Iconography`); `seedUITestSampleIfNeeded`.
 - `Support/Templates.swift` — starter checklists (Car Emergency Kit, Home Emergency,
   72-Hour Go Bag, Camping Box). `Templates.apply` reuses same-name categories and
   skips existing items (idempotent).
@@ -175,13 +175,30 @@ Views (`Views/`)
   permission + failure surface, JSON export, sync status (Local only).
 - `CameraCapture.swift` — `UIImagePickerController` wrapper (camera). Needs
   `NSCameraUsageDescription` (set via `INFOPLIST_KEY_…` in build settings).
-- `StatusBadge.swift` — reusable status capsule.
+- `StatusBadge.swift` — reusable status capsule. Tinted by default; the system
+  **Increase Contrast** setting (`colorSchemeContrast == .increased`) switches it
+  to a solid status-color fill with `Theme.badgeInkOnFill` ink (no app-private
+  toggle). `.neverExpires` always stays tinted — its neutral gray fill can't
+  carry 4:1 ink in light mode and it isn't a signal state.
 
 Design system (`DesignSystem/`)
 - `Theme.swift` — all design tokens (colors, spacing, geometry, shadow, animation).
-  `statusNeverChecked` is violet — visually distinct from overdue red.
+  Tints are adaptive light/dark PAIRS (`adaptive(light:dark:)`); every tint must
+  clear **≥4:1 contrast vs the card surface in BOTH modes** (enforced by
+  `ThemeContrastTests`; dark variants brighter + desaturated, light ambers kept
+  deep — yellow/orange fails on white, not black). Dark `accentSoft` is OPAQUE
+  (a translucent wash would erode icon contrast on the tile). The asset-catalog
+  `AccentColor` carries the same dark variant. `statusNeverChecked` is violet —
+  visually distinct from overdue red.
 - `SupplyStatusStyle.swift` — **single source of truth** mapping `SupplyStatus` →
-  color/symbol/label (`status.style`).
+  color/icon/label (`status.style`). `iconName` = custom template asset used in-app;
+  `symbol` = SF equivalent kept for surfaces that need symbol NAMES (widget, intents).
+- `Iconography.swift` — custom identity icons (`Assets.xcassets/Icons`, 34 template
+  SVGs, one 24-grid stroke family): context name → icon, item name → default artwork
+  for photo-less rows (EN+CN keyword table — ORDER MATTERS, see the ordering-trap
+  tests), `CheckResult.iconName`, and `Image.iconSized(_:)` (custom assets don't
+  respond to `.font`/`.imageScale`). SF Symbols remain correct for generic chrome
+  (plus/trash/folder/chevron…) and the widget (no app-asset dependency).
 - `ItemCard.swift` — primary list-row card (thumbnail via `Thumbnailer`, optional
   breadcrumb + quantity). `Card.swift` (`.cardStyle()`), `PressableButtonStyle.swift`,
   `ScreenBackground.swift` — visual primitives.
@@ -235,7 +252,8 @@ Widget (`MyInventoryWidgets/`, separate appex target)
   derived status & precedence (incl. the exact-due-instant boundary), status labels,
   fuzzy search (incl. context-name + check-comment fields), the notification planner,
   the attention digest, fire-date clamping, deep-link parsing, JSON export round-trip,
-  template idempotency, the Uncategorized move, and orphan-safe context deletion.
+  template idempotency, the Uncategorized move, orphan-safe context deletion, and the
+  Iconography lookups (context/status/check-result icons + keyword-table ordering traps).
 - `MyInventoryUITests/` — XCUITest. Launch with `-uiTesting` (in-memory store + seeded
   sample data + stays on the sidebar). Covers: launch state, app-wide search across
   contexts, context drill-down, adding a context. Run with

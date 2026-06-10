@@ -98,11 +98,13 @@ struct ItemCard: View {
                 .frame(width: 48, height: 48)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         } else {
+            // No photo yet → name-matched default artwork (Iconography table).
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Theme.accentSoft)
                 .frame(width: 48, height: 48)
                 .overlay(
-                    Image(systemName: "shippingbox")
+                    Image(Iconography.itemIconName(forItemNamed: item.name))
+                        .iconSized(26)
                         .foregroundStyle(Theme.accent)
                 )
         }

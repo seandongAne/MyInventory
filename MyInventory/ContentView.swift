@@ -304,7 +304,7 @@ struct ContentView: View {
         } else {
             ContentUnavailableView(
                 "Select an item",
-                systemImage: "shippingbox",
+                image: "icon-item-generic",
                 description: Text("Pick an item to see its details and check history.")
             )
         }
@@ -454,8 +454,8 @@ private struct AttentionSidebarRow: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Theme.statusOverdue.opacity(0.12))
                     .frame(width: 36, height: 36)
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .semibold))
+                Image("icon-status-attention")
+                    .iconSized(19)
                     .foregroundStyle(Theme.statusOverdue)
             }
 
@@ -471,9 +471,9 @@ private struct AttentionSidebarRow: View {
                     .padding(.vertical, 3)
                     .background(Theme.statusOverdue, in: Capsule())
             } else {
-                Image(systemName: "checkmark.circle.fill")
+                Image("icon-status-ok")
+                    .iconSized(15)
                     .foregroundStyle(Theme.statusOK)
-                    .imageScale(.small)
             }
         }
         .padding(.vertical, 4)
@@ -497,8 +497,8 @@ private struct ContextSidebarRow: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(brand.opacity(0.14))
                     .frame(width: 36, height: 36)
-                Image(systemName: SeedData.symbol(forContextNamed: context.name))
-                    .font(.system(size: 16, weight: .semibold))
+                Image(Iconography.contextIconName(forContextNamed: context.name))
+                    .iconSized(20)
                     .foregroundStyle(brand)
             }
 
@@ -527,9 +527,9 @@ private struct GlobalSearchResultRow: View {
 
     var body: some View {
         HStack(spacing: Theme.spacing6) {
-            Image(systemName: status.style.symbol)
+            Image(status.style.iconName)
+                .iconSized(17)
                 .foregroundStyle(status.style.color)
-                .imageScale(.medium)
                 .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 2) {
