@@ -38,6 +38,7 @@ struct ItemCard: View {
                     if let quantity = item.quantity {
                         Text("×\(quantity)")
                             .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
                             .foregroundStyle(Theme.textSecondary)
                     }
                 }
@@ -52,6 +53,7 @@ struct ItemCard: View {
                 if let nextDueText {
                     Text(nextDueText)
                         .font(.subheadline)
+                        .monospacedDigit()
                         .foregroundStyle(Theme.textSecondary)
                 }
 
@@ -82,7 +84,7 @@ struct ItemCard: View {
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
                 .strokeBorder(status.style.color.opacity(status == .overdue || status == .needsAttention ? 0.35 : 0), lineWidth: 1)
         )
-        .shadow(color: Theme.cardShadowColor, radius: Theme.cardShadowRadius, y: Theme.cardShadowY)
+        .elevation(.card)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(item.name), \(status.style.label)")

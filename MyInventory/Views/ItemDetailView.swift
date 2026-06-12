@@ -135,7 +135,7 @@ struct ItemDetailView: View {
                 .scaledToFit()
                 .frame(maxWidth: .infinity, maxHeight: 220)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
-                .shadow(color: Theme.cardShadowColor, radius: Theme.cardShadowRadius, y: Theme.cardShadowY)
+                .elevation(.card)
         }
     }
 
@@ -145,6 +145,7 @@ struct ItemDetailView: View {
                 StatusBadge(status: status)
                 Text(item.statusDetailLabel(globalLead: settings.globalLeadTimeDays))
                     .font(.subheadline)
+                    .monospacedDigit()
                     .foregroundStyle(Theme.textSecondary)
                 Spacer()
             }
@@ -195,6 +196,7 @@ struct ItemDetailView: View {
                 .frame(minWidth: 120, alignment: .leading)
             Text(value)
                 .font(.subheadline)
+                .monospacedDigit()
                 .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.trailing)
             Spacer(minLength: 0)

@@ -14,10 +14,16 @@ struct Card: ViewModifier {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.cardSurface,
                         in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
-            .shadow(color: Theme.cardShadowColor, radius: Theme.cardShadowRadius, y: Theme.cardShadowY)
+            .elevation(.card)
     }
 }
 
 extension View {
     func cardStyle() -> some View { modifier(Card()) }
+
+    /// Soft, single-direction elevation from the Theme shadow tiers
+    /// (color-scheme aware — see `Theme.Shadow`).
+    func elevation(_ shadow: Theme.Shadow = .card) -> some View {
+        self.shadow(color: shadow.color, radius: shadow.radius, y: shadow.y)
+    }
 }

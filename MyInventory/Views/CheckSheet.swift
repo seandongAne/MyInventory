@@ -66,6 +66,7 @@ struct CheckSheet: View {
                 Section {
                     Stepper(value: $quantity, in: 0...9999) {
                         LabeledContent("On hand", value: "\(quantity)")
+                            .monospacedDigit()
                     }
                 } header: {
                     Text("Quantity")

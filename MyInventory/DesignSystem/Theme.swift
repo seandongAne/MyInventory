@@ -77,10 +77,30 @@ enum Theme {
     static let spacing12: CGFloat = 24
     static let spacing16: CGFloat = 32
 
-    // MARK: Shadow
-    static let cardShadowColor:  Color   = Color.black.opacity(0.08)
-    static let cardShadowRadius: CGFloat = 10
-    static let cardShadowY:      CGFloat = 4
+    // MARK: Shadow — soft, single-direction elevation tiers.
+    //
+    // Color-scheme aware: a 0.08-black shadow all but vanishes on a near-black
+    // dark background, so the dark opacities are far heavier (mirrors the
+    // design system's elevation tokens). Blur-px maps 1:1 to SwiftUI's radius,
+    // matching how the original card shadow (0 4px 10px) was already wired.
+    struct Shadow {
+        let color: Color
+        let radius: CGFloat
+        let y: CGFloat
+
+        static let card    = make(light: 0.08, dark: 0.40, radius: 10, y: 4)
+        static let raised  = make(light: 0.12, dark: 0.55, radius: 24, y: 8)
+        static let pressed = make(light: 0.10, dark: 0.50, radius: 3,  y: 1)
+        static let overlay = make(light: 0.22, dark: 0.70, radius: 48, y: 16)
+
+        private static func make(light: Double, dark: Double,
+                                 radius: CGFloat, y: CGFloat) -> Shadow {
+            Shadow(color: Color(uiColor: UIColor { trait in
+                       UIColor(white: 0, alpha: trait.userInterfaceStyle == .dark ? dark : light)
+                   }),
+                   radius: radius, y: y)
+        }
+    }
 
     // MARK: Animation
     static let springQuick  = Animation.spring(response: 0.32, dampingFraction: 0.82)

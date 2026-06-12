@@ -233,6 +233,7 @@ struct ItemEditView: View {
             if trackQuantity {
                 Stepper(value: $quantity, in: 1...9999) {
                     LabeledContent("On hand", value: "\(quantity)")
+                        .monospacedDigit()
                 }
             }
         } header: {
