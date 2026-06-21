@@ -6,15 +6,21 @@
 //  digest (Dev Plan §5, §M4).
 //
 //  Key constraints handled here:
-//   • iOS caps pending local notifications at 64 → we schedule the
-//     soonest-FIRING notifications up to a cap kept well under 64. There is no
-//     look-ahead window: far-future dues are scheduled too (a personal-scale
-//     inventory never approaches the cap). Refresh on app foreground.
+//   • iOS caps pending local notifications at 64 → reminders are BATCHED BY DAY
+//     (same-day dues collapse into one "N supplies due" reminder) so the scarce
+//     slots scale with the number of distinct due-days, not the item count. We
+//     schedule the soonest-FIRING groups up to a cap kept well under 64; there is
+//     no look-ahead window (far-future dues are scheduled too). A large inventory
+//     opened only every few months relies on this — see `plannedNotifications`.
+//     Refresh on app foreground.
 //   • Never-expires (nil interval) items schedule nothing.
 //   • Items needing action NOW (overdue, flagged, never-checked) are batched into
 //     ONE digest notification at the next fire hour — never one nag per item, and
 //     an item that slips overdue between reschedules still gets surfaced instead
 //     of silently losing its (clamped-forward) due notification.
+//   • A single "inactivity nudge" is armed ~1 month out and pushed forward on
+//     every reschedule, so it only fires if the app goes untouched for a month —
+//     pulling an infrequent user back so reminders + the digest stay fresh.
 //   • A fetch failure must NEVER wipe existing reminders — `rescheduleAll(in:)`
 //     skips the pass instead of treating the store as empty.
 //   • We only remove our OWN requests that are no longer planned; the ones we're
@@ -45,6 +51,16 @@ final class NotificationManager {
     /// Stable identifier of the single "needs attention" digest notification.
     /// NOT "item-"-prefixed, so the stale-removal pass never touches it.
     static let digestIdentifier = "attention-digest"
+
+    /// Stable identifier of the single inactivity nudge. Like the digest, it has a
+    /// fixed id (not a managed prefix) and is re-armed every pass, so the
+    /// stale-removal sweep never touches it.
+    static let inactivityNudgeIdentifier = "inactivity-nudge"
+
+    /// Identifier prefixes we own in the pending queue: per-item reminders and
+    /// day-batched reminders. The stale-removal sweep only ever touches these; the
+    /// digest + nudge use fixed ids handled explicitly.
+    private static let managedPrefixes = ["item-", "due-day-", "lead-day-"]
 
     /// Identifiers for the notification category / action.
     static let itemCategoryID = "SUPPLY_ITEM"
@@ -182,7 +198,9 @@ final class NotificationManager {
         // ones we're about to re-add — `add` replaces a same-identifier request in
         // place, so a failed add can't leave the item with nothing (P2).
         let pending = await center.pendingNotificationRequests()
-        var stale = pending.map(\.identifier).filter { $0.hasPrefix("item-") && !plannedIDs.contains($0) }
+        var stale = pending.map(\.identifier).filter { id in
+            Self.managedPrefixes.contains(where: id.hasPrefix) && !plannedIDs.contains(id)
+        }
         if digest == nil { stale.append(Self.digestIdentifier) }
         if !stale.isEmpty {
             center.removePendingNotificationRequests(withIdentifiers: stale)
@@ -191,9 +209,13 @@ final class NotificationManager {
         let byUUID = Dictionary(items.map { ($0.uuid, $0) }, uniquingKeysWith: { first, _ in first })
         var failures = 0
         for plan in plans {
-            let (title, body) = notificationText(for: plan, item: byUUID[plan.itemUUID])
+            let (title, body) = notificationText(for: plan, byUUID: byUUID)
+            // The "Mark as Checked" action targets a single item, so only
+            // single-item reminders carry it; a batched day reminder deep-links to
+            // the attention list instead.
+            let category = plan.isBatch ? nil : Self.itemCategoryID
             let scheduled = await add(identifier: plan.identifier, title: title, body: body,
-                                      categoryIdentifier: Self.itemCategoryID,
+                                      categoryIdentifier: category,
                                       targetDay: plan.fireDate, now: now, calendar: calendar)
             if !scheduled { failures += 1 }
         }
@@ -208,6 +230,23 @@ final class NotificationManager {
                                       categoryIdentifier: nil,
                                       targetDay: now, now: now, calendar: calendar)
             if !scheduled { failures += 1 }
+        }
+
+        // Inactivity nudge: one reminder armed ~1 month out and pushed forward on
+        // every reschedule. Opening the app keeps resetting it, so an active user
+        // never sees it; if the app goes untouched for a month it fires once,
+        // pulling the user back to refresh reminders + the digest. Cleared when
+        // there's nothing to track.
+        if !items.isEmpty,
+           let nudgeDay = calendar.date(byAdding: .month, value: 1, to: now) {
+            let scheduled = await add(identifier: Self.inactivityNudgeIdentifier,
+                                      title: "Time to review your supplies",
+                                      body: "Open MyInventory to make sure nothing's overdue.",
+                                      categoryIdentifier: nil,
+                                      targetDay: nudgeDay, now: now, calendar: calendar)
+            if !scheduled { failures += 1 }
+        } else {
+            center.removePendingNotificationRequests(withIdentifiers: [Self.inactivityNudgeIdentifier])
         }
 
         // App icon badge mirrors the attention count.
@@ -229,25 +268,37 @@ final class NotificationManager {
 
     struct PlannedNotification: Equatable {
         enum Kind: Equatable { case due, lead }
-        let itemUUID: UUID
         let kind: Kind
         /// Target calendar day; the concrete fire time is this day at `fireHour`,
         /// clamped forward if that instant has already passed.
         let fireDate: Date
-        /// Lead days (for `.lead` kind; 0 for `.due`).
+        /// Items sharing this day + kind. One → a personalised reminder carrying
+        /// the "Mark as Checked" action and a per-item deep link; many → a single
+        /// batched reminder ("N supplies …") that deep-links to the attention list.
+        let itemUUIDs: [UUID]
+        /// Pre-computed at planning time (a batch id is keyed by day, not item, so
+        /// it can't be derived from a single uuid later).
+        let identifier: String
+        /// Lead days for the single-item lead text; 0 for due / batched lead.
         var leadDays: Int = 0
 
-        var identifier: String { "item-\(itemUUID.uuidString)-\(kind == .due ? "due" : "lead")" }
+        var isBatch: Bool { itemUUIDs.count > 1 }
     }
 
-    /// Decides which per-item notifications to schedule. Builds every candidate
-    /// (due + lead), sorts by ACTUAL fire date, then caps — so the soonest-firing
-    /// notifications win the scarce slots (a lead can correctly outrank a later
-    /// item's due) (P2).
+    /// Decides which notifications to schedule, **batched by day** so the scarce
+    /// notification slots scale with the number of distinct due-days, not the item
+    /// count: a bulk check that lands 40 items on the same due date two years out
+    /// collapses to ONE reminder instead of 40. The 64-cap is the real risk for a
+    /// large inventory opened only every few months — batching is what keeps every
+    /// future reminder armed across long gaps between app opens (Dev Plan §M4).
+    /// Builds every day-group (due + lead), sorts by fire date, then caps — so the
+    /// soonest-firing groups win the slots (a lead can correctly outrank a later
+    /// day's due).
     ///
     /// Rules:
     ///  • nil interval (never expires)             → nothing.
-    ///  • interval + any future due                → a due reminder + optional lead.
+    ///  • interval + any future due                → a due reminder + optional lead,
+    ///                                               merged per calendar day.
     ///  • needs-action-now states (never checked,
     ///    overdue, flagged)                        → handled by the digest, not here.
     static func plannedNotifications(for items: [SupplyItem],
@@ -255,25 +306,60 @@ final class NotificationManager {
                                      globalLeadTimeDays: Int,
                                      maxPending: Int,
                                      calendar: Calendar = .current) -> [PlannedNotification] {
-        var candidates: [PlannedNotification] = []
+        var dueByDay: [Date: [UUID]] = [:]
+        var leadByDay: [Date: [(uuid: UUID, days: Int)]] = [:]
+
         for item in items {
             guard item.checkIntervalMonths != nil else { continue }   // never expires
             guard let due = item.nextDueDate(calendar: calendar), due > now else { continue }
-            candidates.append(PlannedNotification(itemUUID: item.uuid, kind: .due, fireDate: due))
+            dueByDay[calendar.startOfDay(for: due), default: []].append(item.uuid)
+
             let lead = item.effectiveLeadTimeDays(globalLead: globalLeadTimeDays)
             if lead > 0,
                let leadDate = calendar.date(byAdding: .day, value: -lead, to: due),
                leadDate > now {
-                candidates.append(PlannedNotification(itemUUID: item.uuid, kind: .lead,
-                                                      fireDate: leadDate, leadDays: lead))
+                leadByDay[calendar.startOfDay(for: leadDate), default: []].append((item.uuid, lead))
             }
         }
 
+        var groups: [PlannedNotification] = []
+        for (day, uuids) in dueByDay {
+            groups.append(PlannedNotification(
+                kind: .due, fireDate: day, itemUUIDs: uuids,
+                identifier: scheduleIdentifier(kind: .due, day: day, uuids: uuids, calendar: calendar)))
+        }
+        for (day, entries) in leadByDay {
+            let uuids = entries.map(\.uuid)
+            groups.append(PlannedNotification(
+                kind: .lead, fireDate: day, itemUUIDs: uuids,
+                identifier: scheduleIdentifier(kind: .lead, day: day, uuids: uuids, calendar: calendar),
+                leadDays: uuids.count == 1 ? entries[0].days : 0))
+        }
+
         return Array(
-            candidates
-                .sorted { $0.fireDate < $1.fireDate }   // true soonest-fire-first
+            groups
+                // Soonest-fire-first; the id tiebreak keeps the cap boundary
+                // deterministic regardless of dictionary iteration order.
+                .sorted {
+                    $0.fireDate != $1.fireDate ? $0.fireDate < $1.fireDate
+                                               : $0.identifier < $1.identifier
+                }
                 .prefix(maxPending)
         )
+    }
+
+    /// A single item → the per-item id (keeps the deep link + "Mark as Checked"
+    /// action); several → a day-keyed batch id.
+    private static func scheduleIdentifier(kind: PlannedNotification.Kind,
+                                           day: Date,
+                                           uuids: [UUID],
+                                           calendar: Calendar) -> String {
+        let suffix = kind == .due ? "due" : "lead"
+        if uuids.count == 1 {
+            return "item-\(uuids[0].uuidString)-\(suffix)"
+        }
+        let c = calendar.dateComponents([.year, .month, .day], from: day)
+        return "\(suffix)-day-\(c.year ?? 0)-\(c.month ?? 0)-\(c.day ?? 0)"
     }
 
     /// What needs the user's attention RIGHT NOW (drives the digest + app badge).
@@ -330,6 +416,8 @@ final class NotificationManager {
     /// Maps a notification request identifier back to an in-app destination.
     static func deepLink(forNotificationIdentifier identifier: String) -> DeepLink? {
         if identifier == digestIdentifier { return .attention }
+        // Batched day reminders cover several items → land on the attention list.
+        if identifier.hasPrefix("due-day-") || identifier.hasPrefix("lead-day-") { return .attention }
         guard identifier.hasPrefix("item-") else { return nil }
         var core = String(identifier.dropFirst("item-".count))
         for suffix in ["-due", "-lead"] where core.hasSuffix(suffix) {
@@ -388,12 +476,18 @@ final class NotificationManager {
     // MARK: Helpers
 
     private func notificationText(for plan: PlannedNotification,
-                                  item: SupplyItem?) -> (title: String, body: String) {
-        let name = displayName(item)
+                                  byUUID: [UUID: SupplyItem]) -> (title: String, body: String) {
+        let name = displayName(plan.itemUUIDs.first.flatMap { byUUID[$0] })
         switch plan.kind {
         case .due:
+            if plan.isBatch {
+                return ("Checks due", "\(plan.itemUUIDs.count) supplies are due for a check.")
+            }
             return ("Check due", "\(name) is due for a check.")
         case .lead:
+            if plan.isBatch {
+                return ("Checks coming up", "\(plan.itemUUIDs.count) supplies are due soon.")
+            }
             let days = max(plan.leadDays, 1)
             return ("Check coming up", "\(name) is due in \(days) day\(days == 1 ? "" : "s").")
         }

@@ -73,7 +73,13 @@ struct ContentView: View {
         }
         .task {
             seedContexts()
-            if isUITesting { seedUITestSample() }
+            if isUITesting {
+                seedUITestSample()
+                // Verification harness only: batchable same-day dues.
+                if ProcessInfo.processInfo.arguments.contains("-seedBatch") {
+                    try? SeedData.seedBatchSampleIfNeeded(in: modelContext)
+                }
+            }
             applyInitialSidebarSelection()
             await refreshNotifications()
             // A notification tap may have cold-started the app before this view

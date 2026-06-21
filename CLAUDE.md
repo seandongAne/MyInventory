@@ -98,8 +98,17 @@ Models (`Models/`, all `@Model`, CloudKit-safe — see invariants)
 Services
 - `Services/NotificationManager.swift` — `@MainActor @Observable`, singleton
   `NotificationManager.shared` (shared with App Intents). Local re-check reminders:
-  - Pure, testable static planner `plannedNotifications(...)`: per-item due + lead for
-    FUTURE dues only, sorted soonest-fire-first, capped at 60 < iOS's 64.
+  - Pure, testable static planner `plannedNotifications(...)`: due + lead for FUTURE
+    dues only, **batched by calendar day** (same-day dues collapse into one
+    `due-day-<date>` / `lead-day-<date>` reminder; a lone item keeps its
+    `item-<uuid>-due/-lead` id so its deep link + Mark-as-Checked survive), sorted
+    soonest-fire-first, capped at 60 < iOS's 64. Batching makes the cap scale with
+    distinct due-days, not item count — the key to keeping a large inventory's
+    far-future (e.g. 2-year) reminders armed across long gaps between app opens.
+  - **Inactivity nudge** (`inactivity-nudge`): one generic "review your supplies"
+    reminder armed ~1 month out and pushed forward on every reschedule. An active
+    user never sees it; if the app goes untouched for a month it fires once, pulling
+    the user back so reminders + the digest stay fresh. Cleared when there are no items.
   - **Attention digest**: overdue / flagged / never-checked items are batched into ONE
     `attention-digest` notification at the next fire hour (pure static
     `attentionSummary(...)`), re-armed each pass — never one nag per item, and it
@@ -107,8 +116,9 @@ Services
   - `resolvedFireDate(...)` (pure static) clamps a target day to `fireHour`, bumping
     past instants to the next day. Fire hour comes from `SettingsStore.notificationFireHour`.
   - Delegate adapter: foreground banners (`willPresent`), tap → `pendingDeepLink`
-    (`.item(uuid)` from `item-<uuid>-due/-lead`, `.attention` from the digest;
-    parser `deepLink(forNotificationIdentifier:)` is pure/testable), and a background
+    (`.item(uuid)` from `item-<uuid>-due/-lead`, `.attention` from the digest or a
+    `due-day-`/`lead-day-` batch; parser `deepLink(forNotificationIdentifier:)` is
+    pure/testable), and a background
     **"Mark as Checked" action** (`SUPPLY_ITEM` category) that logs an OK check
     without opening the app (save failure → surfaced as an immediate notification).
   - `rescheduleAll` is fetch-failure-safe (skips, never wipes existing reminders) and
@@ -250,8 +260,9 @@ Widget (`MyInventoryWidgets/`, separate appex target)
 
 - `MyInventoryTests/` — XCTest unit tests (`@MainActor`, in-memory `ModelContainer`):
   derived status & precedence (incl. the exact-due-instant boundary), status labels,
-  fuzzy search (incl. context-name + check-comment fields), the notification planner,
-  the attention digest, fire-date clamping, deep-link parsing, JSON export round-trip,
+  fuzzy search (incl. context-name + check-comment fields), the notification planner
+  (incl. same-day batching + cap-counts-days-not-items), the attention digest,
+  fire-date clamping, deep-link parsing (incl. batch ids), JSON export round-trip,
   template idempotency, the Uncategorized move, orphan-safe context deletion, and the
   Iconography lookups (context/status/check-result icons + keyword-table ordering traps).
 - `MyInventoryUITests/` — XCUITest. Launch with `-uiTesting` (in-memory store + seeded

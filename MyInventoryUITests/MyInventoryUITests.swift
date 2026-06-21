@@ -96,4 +96,53 @@ final class MyInventoryUITests: XCTestCase {
     // unreliable (the swipe is interpreted as row selection, navigating into the
     // context instead of revealing the Delete action). The UI trigger itself is the
     // same .onDelete + confirmationDialog pattern used by CategoryManagerView.
+
+    /// Runtime check for the day-batched reminders + inactivity nudge: granting
+    /// notification permission triggers an AUTHORIZED `rescheduleAll`. With
+    /// `-seedBatch` the store holds three same-interval items checked today, so
+    /// their dues collapse onto one day and the planner takes the BATCH branch —
+    /// the exact integration the (process-isolated) unit tests can't drive. We
+    /// assert the app survives that pass and reports NO scheduling failure.
+    @MainActor
+    func testGrantingNotificationsReschedulesBatchedDuesWithoutFailure() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting", "-seedBatch"]
+        app.launch()
+
+        // App is up.
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 10))
+
+        // Open Settings (gear button → sheet).
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+
+        // Grant notifications → requestAuthorization + an authorized rescheduleAll
+        // over the seeded same-day dues (batch path) + the inactivity nudge.
+        let enable = app.buttons["Enable Notifications"]
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        enable.tap()
+
+        // The system permission alert is owned by Springboard.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons["Allow"]
+        if allow.waitForExistence(timeout: 8) { allow.tap() }
+
+        // Authorization completed once the "Enable Notifications" button is gone
+        // (status left .notDetermined). `enableNotifications` fires the reschedule
+        // immediately afterwards.
+        XCTAssertTrue(enable.waitForNonExistence(timeout: 12),
+                      "Enable button should disappear once authorized")
+
+        // Let the async reschedule (batch + nudge) settle, then assert NO failure
+        // surfaced — the failure Label renders only when a reminder fails to add.
+        Thread.sleep(forTimeInterval: 3)
+        let failure = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS[c] %@", "couldn't be scheduled")).firstMatch
+        XCTAssertFalse(failure.exists, "No reminder should fail to schedule")
+
+        // App is still responsive (no crash in the authorized batch pass).
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 5))
+    }
 }

@@ -1,0 +1,91 @@
+# MyInventory — TestFlight distribution lanes.
+#
+# Signing is MANUAL (xcodebuild auto-signing fails with this Individual account —
+# see the `asc-api-credentials` / `myinventory-distribution` notes). The Apple
+# Distribution cert lives in the login keychain; the two App Store profiles
+# ("MyInventory App Store" / "MyInventory Widgets App Store", valid to 2027-06-10)
+# are installed under ~/Library/MobileDevice/Provisioning Profiles.
+#
+# The ASC API key (.p8) is NOT committed — only the non-secret IDs are. The key
+# can upload to TestFlight and manage builds/groups, but CANNOT create App records
+# or App Groups (those need Apple-ID auth in the web UI).
+#
+# Usage:
+#   fastlane release       # archive (manual, app-store) + upload to TestFlight
+#   fastlane tf_internal   # assign the just-uploaded build to the "Solo Test" group
+#                          #   (run once the build finishes processing / shows VALID)
+
+default_platform(:ios)
+
+ASC_KEY_ID     = "UC9PT8ZAM2"
+ASC_ISSUER_ID  = "73408141-4165-4bcc-b4dd-ab3974c70d9d"
+ASC_KEY_PATH   = File.expand_path("~/.appstoreconnect/private_keys/AuthKey_#{ASC_KEY_ID}.p8")
+TEAM_ID        = "974NJFKQLF"
+APP_BUNDLE     = "CharlieW.MyInventory"
+WIDGET_BUNDLE  = "CharlieW.MyInventory.MyInventoryWidgets"
+INTERNAL_GROUP = "Solo Test"
+
+def asc_key
+  app_store_connect_api_key(
+    key_id: ASC_KEY_ID,
+    issuer_id: ASC_ISSUER_ID,
+    key_filepath: ASC_KEY_PATH
+  )
+end
+
+platform :ios do
+  desc "Archive (manual signing, App Store) and upload to TestFlight"
+  lane :release do
+    api_key = asc_key
+    build_app(
+      project: "MyInventory.xcodeproj",
+      scheme: "MyInventory",
+      configuration: "Release",
+      clean: true,
+      output_directory: "build",
+      output_name: "MyInventory.ipa",
+      export_method: "app-store",
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: TEAM_ID,
+        provisioningProfiles: {
+          APP_BUNDLE    => "MyInventory App Store",
+          WIDGET_BUNDLE => "MyInventory Widgets App Store"
+        }
+      }
+    )
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: "build/MyInventory.ipa",
+      skip_submission: true,
+      skip_waiting_for_build_processing: true
+    )
+  end
+
+  # GOTCHA (from prior builds): upload_to_testflight(distribute_only:, groups:)
+  # does NOT work for INTERNAL groups — pilot routes it through external review and
+  # fails "Beta App Description is missing." Assign internal builds via ConnectAPI
+  # directly with the API-key token instead (no Apple-ID/2FA needed). No review.
+  desc "Assign the latest processed build to the internal Solo Test group"
+  lane :tf_internal do
+    require "spaceship"
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
+      key_id: ASC_KEY_ID,
+      issuer_id: ASC_ISSUER_ID,
+      filepath: ASC_KEY_PATH
+    )
+    app = Spaceship::ConnectAPI::App.find(APP_BUNDLE)
+    UI.user_error!("App #{APP_BUNDLE} not found") unless app
+    group = app.get_beta_groups.find { |g| g.name == INTERNAL_GROUP }
+    UI.user_error!("Internal group '#{INTERNAL_GROUP}' not found") unless group
+
+    build = Spaceship::ConnectAPI::Build.all(
+      app_id: app.id, sort: "-uploadedDate", limit: 5
+    ).max_by { |b| b.version.to_i }
+    UI.user_error!("No build found to assign") unless build
+    UI.message("Assigning build (#{build.version}) [#{build.processing_state}] to '#{INTERNAL_GROUP}'")
+    build.add_beta_groups(beta_groups: [group])
+    UI.success("Build (#{build.version}) assigned to '#{INTERNAL_GROUP}'")
+  end
+end

@@ -270,7 +270,7 @@ final class MyInventoryTests: XCTestCase {
         let sooner = makeItem(name: "Sooner", intervalMonths: 12, dueOffsetDays: 10, now: now)
         let plans = NotificationManager.plannedNotifications(
             for: [later, sooner], now: now, globalLeadTimeDays: 0, maxPending: 60)
-        XCTAssertEqual(plans.first?.itemUUID, sooner.uuid)
+        XCTAssertEqual(plans.first?.itemUUIDs, [sooner.uuid])
     }
 
     func testPlannerCapPrefersSoonestFireAcrossDueAndLead() {
@@ -288,8 +288,51 @@ final class MyInventoryTests: XCTestCase {
         let plans = NotificationManager.plannedNotifications(
             for: [a, b], now: now, globalLeadTimeDays: 7, maxPending: 1)
         XCTAssertEqual(plans.count, 1)
-        XCTAssertEqual(plans.first?.itemUUID, a.uuid)
+        XCTAssertEqual(plans.first?.itemUUIDs, [a.uuid])
         XCTAssertEqual(plans.first?.kind, .lead)
+    }
+
+    // MARK: - Day batching (keeps a large, infrequently-opened inventory under the cap)
+
+    func testPlannerBatchesSameDayDuesIntoOneNotification() {
+        let now = Date.now
+        // 40 items bulk-checked together → all due the SAME day two years out.
+        // Without batching that's 40 due reminders; with it, a single grouped one.
+        let items = (0..<40).map {
+            makeItem(name: "Item\($0)", intervalMonths: 24, dueOffsetDays: 200, now: now)
+        }
+        let plans = NotificationManager.plannedNotifications(
+            for: items, now: now, globalLeadTimeDays: 0, maxPending: 60)
+        let due = plans.filter { $0.kind == .due }
+        XCTAssertEqual(due.count, 1)
+        XCTAssertEqual(due.first?.itemUUIDs.count, 40)
+        XCTAssertEqual(due.first?.isBatch, true)
+        XCTAssertEqual(due.first?.identifier.hasPrefix("due-day-"), true)
+    }
+
+    func testPlannerKeepsPerItemIdentifierForSingleItemDay() {
+        let now = Date.now
+        // A lone item on its own due day keeps the per-item id, so its tap deep
+        // link and "Mark as Checked" action still work.
+        let item = makeItem(intervalMonths: 12, dueOffsetDays: 30, now: now)
+        let plans = NotificationManager.plannedNotifications(
+            for: [item], now: now, globalLeadTimeDays: 0, maxPending: 60)
+        let due = plans.first { $0.kind == .due }
+        XCTAssertEqual(due?.isBatch, false)
+        XCTAssertEqual(due?.identifier, "item-\(item.uuid.uuidString)-due")
+    }
+
+    func testPlannerCapCountsDaysNotItems() {
+        let now = Date.now
+        // 70 items on the SAME due day fit in a single slot — 70 per-item
+        // notifications would blow straight past the iOS 64-cap.
+        let items = (0..<70).map {
+            makeItem(name: "Item\($0)", intervalMonths: 24, dueOffsetDays: 200, now: now)
+        }
+        let plans = NotificationManager.plannedNotifications(
+            for: items, now: now, globalLeadTimeDays: 0, maxPending: 60)
+        XCTAssertEqual(plans.count, 1)
+        XCTAssertEqual(plans.first?.itemUUIDs.count, 70)
     }
 
     // MARK: - Attention digest (overdue / flagged / never-checked → ONE notification)
@@ -371,6 +414,9 @@ final class MyInventoryTests: XCTestCase {
                        .item(uuid))
         XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: NotificationManager.digestIdentifier),
                        .attention)
+        // Batched day reminders cover several items → attention list, not one item.
+        XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: "due-day-2027-1-7"), .attention)
+        XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: "lead-day-2027-1-7"), .attention)
         XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "something-else"))
         XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "item-not-a-uuid-due"))
     }
