@@ -117,22 +117,26 @@ final class MyInventoryUITests: XCTestCase {
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
 
-        // Grant notifications → requestAuthorization + an authorized rescheduleAll
-        // over the seeded same-day dues (batch path) + the inactivity nudge.
+        // The batched-dues reschedule runs on launch (refreshNotifications) AND
+        // again if we grant permission here. Notification authorization is
+        // SIMULATOR-WIDE and survives between runs, so "Enable Notifications" only
+        // appears while the status is still .notDetermined (first run after a
+        // privacy reset). Drive the grant when it's offered; otherwise the app is
+        // already authorized/denied and the launch reschedule already exercised the
+        // batch path — either way the assertion below is identical. (This keeps the
+        // test deterministic without depending on a pre-run `simctl privacy reset`.)
         let enable = app.buttons["Enable Notifications"]
-        XCTAssertTrue(enable.waitForExistence(timeout: 5))
-        enable.tap()
-
-        // The system permission alert is owned by Springboard.
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let allow = springboard.buttons["Allow"]
-        if allow.waitForExistence(timeout: 8) { allow.tap() }
-
-        // Authorization completed once the "Enable Notifications" button is gone
-        // (status left .notDetermined). `enableNotifications` fires the reschedule
-        // immediately afterwards.
-        XCTAssertTrue(enable.waitForNonExistence(timeout: 12),
-                      "Enable button should disappear once authorized")
+        if enable.waitForExistence(timeout: 5) {
+            enable.tap()
+            // The system permission alert is owned by Springboard.
+            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            let allow = springboard.buttons["Allow"]
+            if allow.waitForExistence(timeout: 8) { allow.tap() }
+            // `enableNotifications` fires the authorized rescheduleAll once the
+            // button disappears (status left .notDetermined).
+            XCTAssertTrue(enable.waitForNonExistence(timeout: 12),
+                          "Enable button should disappear once authorized")
+        }
 
         // Let the async reschedule (batch + nudge) settle, then assert NO failure
         // surfaced — the failure Label renders only when a reminder fails to add.
@@ -167,11 +171,74 @@ final class MyInventoryUITests: XCTestCase {
                       "Backup should be prepared and the Export share button shown")
         XCTAssertFalse(app.alerts["Export failed"].exists)
 
+        // The restore counterpart is offered alongside export (it opens a system
+        // file picker, which is owned by another process and not driven here).
+        XCTAssertTrue(app.buttons["Restore from Backup…"].exists,
+                      "Restore should be offered next to Export")
+
         // Tapping opens the system share sheet (identifiers vary by iOS version, so
         // accept either the activity container or the ubiquitous Copy action).
         export.tap()
         let appeared = app.otherElements["ActivityListView"].waitForExistence(timeout: 6)
             || app.buttons["Copy"].waitForExistence(timeout: 2)
         XCTAssertTrue(appeared, "Tapping Export should present the system share sheet")
+    }
+
+    /// First-run guide: the welcome cards appear and can be completed with the
+    /// visible buttons (never relying on the swipe being discovered). `-showOnboarding`
+    /// forces the guide regardless of the persisted flag.
+    @MainActor
+    func testWelcomeGuideCanBeCompleted() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting", "-showOnboarding"]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Welcome to MyInventory"].waitForExistence(timeout: 10))
+
+        for _ in 0..<3 {
+            let cont = app.buttons["Continue"]
+            XCTAssertTrue(cont.waitForExistence(timeout: 5))
+            cont.tap()
+        }
+        let getStarted = app.buttons["Get Started"]
+        XCTAssertTrue(getStarted.waitForExistence(timeout: 5))
+        getStarted.tap()
+
+        // Guide closed, back in the app (no crash). On compact iPhone there are no
+        // coach-marks, so the sidebar with the seeded contexts is shown.
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 8))
+    }
+
+    /// The per-row ✓ button is visible and, being borderless, checks the item in
+    /// place rather than opening its detail. Captures a screenshot as evidence.
+    @MainActor
+    func testItemRowCheckButtonChecksInPlace() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting"]
+        app.launch()
+
+        let vehicle = app.staticTexts["Vehicle"]
+        XCTAssertTrue(vehicle.waitForExistence(timeout: 10))
+        vehicle.tap()
+
+        XCTAssertTrue(app.staticTexts["First Aid Kit"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.navigationBars["Vehicle"].waitForExistence(timeout: 5))
+
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = "context-list-with-check-button"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // The ✓ sits at the right edge of the row. Coordinate-tap it (it's not a
+        // labeled element — the card combines its children for VoiceOver).
+        let card = app.cells.containing(.staticText, identifier: "First Aid Kit").firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.5)).tap()
+
+        // Still on the Vehicle list — the ✓ checked the item rather than pushing
+        // its detail (which would replace the nav bar with "First Aid Kit").
+        XCTAssertTrue(app.navigationBars["Vehicle"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["First Aid Kit"].exists,
+                       "Tapping ✓ must check in place, not open the detail")
     }
 }

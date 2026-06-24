@@ -239,7 +239,8 @@ struct ContextListView: View {
         ItemCard(
             item: item,
             status: item.status(leadTimeDays: lead),
-            nextDueText: item.statusDetailLabel(globalLead: lead)
+            nextDueText: item.statusDetailLabel(globalLead: lead),
+            onCheck: { quickCheck(item) }
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
@@ -337,6 +338,9 @@ struct ContextListView: View {
                 Label("Start from a Template", systemImage: "list.bullet.rectangle")
             }
             .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .foregroundStyle(Theme.badgeInkOnFill)
+            .coachmarkAnchor(.addFirst)
             Button {
                 showingCategoryManager = true
             } label: {

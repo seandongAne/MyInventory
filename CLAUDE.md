@@ -138,8 +138,15 @@ Support
 - `Support/Templates.swift` — starter checklists (Car Emergency Kit, Home Emergency,
   72-Hour Go Bag, Camping Box). `Templates.apply` reuses same-name categories and
   skips existing items (idempotent).
-- `Support/DataExporter.swift` — JSON export of the full hierarchy (photos excluded)
-  + `JSONExportDocument` for `.fileExporter`. Settings → "Export All Data…".
+- `Support/DataExporter.swift` — JSON export of the full hierarchy (photos excluded);
+  written to a temp file and shared via `ShareLink` (Settings → "Export All Data…":
+  email / Files / cloud / AirDrop, so it can reach a PC).
+- `Support/DataImporter.swift` — restores an exported JSON backup (Settings →
+  "Restore from Backup…", `.fileImporter`). Merge is keyed on each entity's `uuid`,
+  so it's **idempotent** (re-import = no-op) and **non-destructive** (only ADDS
+  what's missing — never overwrites a field or deletes anything; also fills in
+  missing checks on an existing item). Photos aren't in the export, so aren't
+  restored. The real recovery story remains CloudKit sync (M6).
 - `Support/Thumbnailer.swift` — ImageIO downsampling + NSCache for list-row photos
   (never decode the full stored image per row).
 - `Support/WidgetBridge.swift` — writes a JSON snapshot (attention counts + next dues)

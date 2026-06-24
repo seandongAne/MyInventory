@@ -23,6 +23,7 @@ enum SidebarSelection: Hashable {
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
@@ -34,6 +35,11 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var seedError: String?
+
+    // First-run guide: welcome cards (all devices) → coach-marks (iPad only).
+    @State private var showingWelcome = false
+    @State private var runCoachmarks = false
+    @State private var wantsCoachmarks = false
 
     // App-wide search lives on the sidebar (root), so a user can find an item
     // without first knowing which context (Vehicle/Bag/House) it lives in.
@@ -59,8 +65,15 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .tint(Theme.accent)
+        .coachmarks(coachmarkSteps, isActive: $runCoachmarks, onFinish: completeOnboarding)
         .sheet(isPresented: $showingSettings) {
-            NavigationStack { SettingsView() }
+            NavigationStack { SettingsView(onReplayGuide: startOnboarding) }
+        }
+        .sheet(isPresented: $showingWelcome, onDismiss: afterWelcome) {
+            WelcomeView { completed in
+                wantsCoachmarks = completed
+                showingWelcome = false
+            }
         }
         .alert("Couldn't set up your data", isPresented: Binding(
             get: { seedError != nil },
@@ -85,6 +98,7 @@ struct ContentView: View {
             // A notification tap may have cold-started the app before this view
             // existed — consume any deep link that's already waiting.
             handleDeepLink(notifications.pendingDeepLink)
+            maybeStartOnboarding()
         }
         .onChange(of: contexts) { _, _ in
             applyInitialSidebarSelection()
@@ -336,6 +350,57 @@ struct ContentView: View {
         try? SeedData.seedUITestSampleIfNeeded(in: modelContext)
     }
 
+    // MARK: First-run guide
+
+    /// One short coach-mark shown after the welcome cards (iPad only). It points at
+    /// the empty context's prominent "Start from a Template" button — a content
+    /// element that's reliably present and correctly positioned on first launch.
+    /// (The sidebar's Needs Attention row can't be spotlighted reliably: the split
+    /// view collapses the sidebar in portrait. Needs Attention is covered by the
+    /// welcome cards instead.)
+    private var coachmarkSteps: [CoachmarkStep] {
+        [
+            CoachmarkStep(target: .addFirst,
+                          title: "Add your first supplies",
+                          message: "Start from a ready-made checklist, or add items yourself. Once items are in, tap an item's green ✓ to mark it checked — and Needs Attention will show whatever's due next.")
+        ]
+    }
+
+    /// Show the guide on a real first launch, or whenever a test/Settings asks.
+    private func maybeStartOnboarding() {
+        let args = ProcessInfo.processInfo.arguments
+        // Verification hook: jump straight to the coach-marks (skip the cards).
+        if args.contains("-showCoachmarks") {
+            runCoachmarks = true
+            return
+        }
+        let forced = args.contains("-showOnboarding")
+        if forced || (!settings.hasCompletedOnboarding && !isUITesting) {
+            showingWelcome = true
+        }
+    }
+
+    /// Replays the guide on demand (from Settings).
+    private func startOnboarding() {
+        showingSettings = false
+        showingWelcome = true
+    }
+
+    /// After the welcome cards close: run coach-marks on iPad if the user tapped
+    /// "Get Started" (not "Skip"); otherwise we're done.
+    private func afterWelcome() {
+        if wantsCoachmarks && hSizeClass == .regular {
+            runCoachmarks = true
+        } else {
+            completeOnboarding()
+        }
+        wantsCoachmarks = false
+    }
+
+    private func completeOnboarding() {
+        settings.hasCompletedOnboarding = true
+    }
+
     // MARK: Deep links (notification taps)
 
     private func handleDeepLink(_ link: NotificationManager.DeepLink?) {
@@ -472,7 +537,7 @@ private struct AttentionSidebarRow: View {
             if count > 0 {
                 Text("\(count)")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.badgeInkOnFill)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
                     .background(Theme.statusOverdue, in: Capsule())
@@ -515,7 +580,7 @@ private struct ContextSidebarRow: View {
             if attentionCount > 0 {
                 Text("\(attentionCount)")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.badgeInkOnFill)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
                     .background(Theme.statusOverdue, in: Capsule())

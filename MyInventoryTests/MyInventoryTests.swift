@@ -452,6 +452,133 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(exportedItem?.checks.first?.result, CheckResult.replaced.rawValue)
     }
 
+    // MARK: - Import / Restore
+
+    /// A fresh, empty in-memory store. Returns the CONTAINER (not just its
+    /// context) so the caller keeps it alive: handing back only `mainContext`
+    /// lets the container deallocate, and its store coordinator then tears down
+    /// on a background queue mid-fetch — a use-after-free crash.
+    private func makeEmptyStore() throws -> ModelContainer {
+        try ModelContainer(
+            for: SupplyContext.self, SupplyCategory.self, SupplyItem.self, CheckRecord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    }
+
+    /// Round-trip: export a populated store, then restore the JSON into a fresh
+    /// (empty) store — the full hierarchy, identity (uuid), item fields, and check
+    /// history all return. This is the device-loss / re-install path.
+    func testImportRestoresHierarchyIntoEmptyStore() throws {
+        let supplyCtx = SupplyContext(name: "Vehicle", sortOrder: 0)
+        context.insert(supplyCtx)
+        let cat = SupplyCategory(name: "Kit", sortOrder: 0)
+        cat.context = supplyCtx
+        context.insert(cat)
+        let item = SupplyItem(name: "First Aid Kit", checkIntervalMonths: 6)
+        item.quantity = 2
+        item.leadTimeDaysOverride = 14
+        item.storageLocation = "Trunk"
+        item.category = cat
+        context.insert(item)
+        let check = CheckRecord(date: .now, result: .replaced, comment: "restocked")
+        check.item = item
+        context.insert(check)
+        try context.save()
+
+        let export = try DataImporter.decode(DataExporter.makeExport(from: context))
+        let destStore = try makeEmptyStore()   // held for the test's lifetime
+        let dest = destStore.mainContext
+
+        let summary = try DataImporter.merge(export, into: dest)
+        XCTAssertEqual(summary, DataImporter.Summary(contextsAdded: 1, categoriesAdded: 1,
+                                                     itemsAdded: 1, checksAdded: 1))
+
+        let contexts = try dest.fetch(FetchDescriptor<SupplyContext>())
+        XCTAssertEqual(contexts.count, 1)
+        XCTAssertEqual(contexts.first?.uuid, supplyCtx.uuid)   // identity preserved
+        let restored = contexts.first?.allItems.first
+        XCTAssertEqual(restored?.uuid, item.uuid)
+        XCTAssertEqual(restored?.name, "First Aid Kit")
+        XCTAssertEqual(restored?.checkIntervalMonths, 6)
+        XCTAssertEqual(restored?.quantity, 2)
+        XCTAssertEqual(restored?.leadTimeDaysOverride, 14)
+        XCTAssertEqual(restored?.storageLocation, "Trunk")
+        XCTAssertEqual(restored?.unwrappedChecks.count, 1)
+        XCTAssertEqual(restored?.lastCheck?.result, .replaced)
+        XCTAssertEqual(restored?.lastCheck?.comment, "restocked")
+    }
+
+    /// Re-importing the same backup adds nothing and creates no duplicates — the
+    /// uuid-keyed merge is idempotent.
+    func testImportIsIdempotentOnReimport() throws {
+        let supplyCtx = SupplyContext(name: "House", sortOrder: 0)
+        context.insert(supplyCtx)
+        let cat = SupplyCategory(name: "Food", sortOrder: 0)
+        cat.context = supplyCtx
+        context.insert(cat)
+        let item = SupplyItem(name: "Canned Tuna", checkIntervalMonths: 24)
+        item.category = cat
+        context.insert(item)
+        let check = CheckRecord(date: .now, result: .ok)
+        check.item = item
+        context.insert(check)
+        try context.save()
+
+        let export = try DataImporter.decode(DataExporter.makeExport(from: context))
+        let destStore = try makeEmptyStore()   // held for the test's lifetime
+        let dest = destStore.mainContext
+
+        XCTAssertFalse(try DataImporter.merge(export, into: dest).isEmpty)
+        XCTAssertTrue(try DataImporter.merge(export, into: dest).isEmpty,
+                      "Re-importing the same backup must add nothing")
+
+        XCTAssertEqual(try dest.fetch(FetchDescriptor<SupplyContext>()).count, 1)
+        XCTAssertEqual(try dest.fetch(FetchDescriptor<SupplyCategory>()).count, 1)
+        XCTAssertEqual(try dest.fetch(FetchDescriptor<SupplyItem>()).count, 1)
+        XCTAssertEqual(try dest.fetch(FetchDescriptor<CheckRecord>()).count, 1)
+    }
+
+    /// A backup with newer history fills the gap on an item the store already has
+    /// (matched by uuid) — without duplicating the item.
+    func testImportAddsMissingChecksToExistingItem() throws {
+        let supplyCtx = SupplyContext(name: "Bag", sortOrder: 0)
+        context.insert(supplyCtx)
+        let cat = SupplyCategory(name: "Meds", sortOrder: 0)
+        cat.context = supplyCtx
+        context.insert(cat)
+        let item = SupplyItem(name: "Ibuprofen", checkIntervalMonths: 12)
+        item.category = cat
+        context.insert(item)
+        let oldCheck = CheckRecord(date: Date(timeIntervalSince1970: 1_700_000_000), result: .ok)
+        oldCheck.item = item
+        context.insert(oldCheck)
+        let newCheck = CheckRecord(date: .now, result: .replaced)
+        newCheck.item = item
+        context.insert(newCheck)
+        try context.save()
+
+        let export = try DataImporter.decode(DataExporter.makeExport(from: context))
+
+        // Destination already holds the same context/category/item (same uuids) but
+        // only the OLD check.
+        let destStore = try makeEmptyStore()   // held for the test's lifetime
+        let dest = destStore.mainContext
+        let dCtx = SupplyContext(name: "Bag", sortOrder: 0); dCtx.uuid = supplyCtx.uuid
+        dest.insert(dCtx)
+        let dCat = SupplyCategory(name: "Meds", sortOrder: 0); dCat.uuid = cat.uuid; dCat.context = dCtx
+        dest.insert(dCat)
+        let dItem = SupplyItem(name: "Ibuprofen", checkIntervalMonths: 12); dItem.uuid = item.uuid; dItem.category = dCat
+        dest.insert(dItem)
+        let dOld = CheckRecord(date: oldCheck.date, result: .ok); dOld.uuid = oldCheck.uuid; dOld.item = dItem
+        dest.insert(dOld)
+        try dest.save()
+
+        let summary = try DataImporter.merge(export, into: dest)
+        XCTAssertEqual(summary, DataImporter.Summary(contextsAdded: 0, categoriesAdded: 0,
+                                                     itemsAdded: 0, checksAdded: 1))
+        XCTAssertEqual(try dest.fetch(FetchDescriptor<SupplyItem>()).count, 1, "Item must not be duplicated")
+        XCTAssertEqual(try dest.fetch(FetchDescriptor<CheckRecord>()).count, 2, "Missing check filled in")
+    }
+
     // MARK: - Templates
 
     func testTemplateApplyIsIdempotent() throws {

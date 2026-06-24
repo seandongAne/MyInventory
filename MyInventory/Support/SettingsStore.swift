@@ -18,6 +18,7 @@ final class SettingsStore {
         static let defaultIntervalMonths = "defaultIntervalMonths"
         static let notificationsRequested = "notificationsRequested"
         static let notificationFireHour = "notificationFireHour"
+        static let hasCompletedOnboarding = "hasCompletedOnboarding"
     }
 
     /// Days of advance warning before an item becomes overdue.
@@ -40,6 +41,12 @@ final class SettingsStore {
         didSet { defaults.set(notificationsRequested, forKey: Key.notificationsRequested) }
     }
 
+    /// Whether the first-run welcome guide has been completed (or skipped). The
+    /// guide can still be replayed on demand from Settings.
+    var hasCompletedOnboarding: Bool {
+        didSet { defaults.set(hasCompletedOnboarding, forKey: Key.hasCompletedOnboarding) }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -49,12 +56,14 @@ final class SettingsStore {
             Key.globalLeadTimeDays: 7,
             Key.defaultIntervalMonths: 0,
             Key.notificationsRequested: false,
-            Key.notificationFireHour: 9
+            Key.notificationFireHour: 9,
+            Key.hasCompletedOnboarding: false
         ])
         self.globalLeadTimeDays = defaults.integer(forKey: Key.globalLeadTimeDays)
         self.defaultIntervalMonths = defaults.integer(forKey: Key.defaultIntervalMonths)
         self.notificationsRequested = defaults.bool(forKey: Key.notificationsRequested)
         self.notificationFireHour = defaults.integer(forKey: Key.notificationFireHour)
+        self.hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding)
     }
 
     /// nil when no convenience default is configured.

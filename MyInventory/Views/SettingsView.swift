@@ -13,6 +13,10 @@ import UniformTypeIdentifiers
 import UserNotifications
 
 struct SettingsView: View {
+    /// Replays the first-run welcome guide. Defaults to a no-op so previews and
+    /// any other call sites compile unchanged.
+    var onReplayGuide: () -> Void = {}
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(SettingsStore.self) private var settings
@@ -27,10 +31,16 @@ struct SettingsView: View {
     @State private var backupURL: URL?
     @State private var exportError: String?
 
-    var body: some View {
-        @Bindable var settings = settings
+    // Restore — read a previously exported JSON backup back in. The merge is
+    // idempotent and never overwrites/deletes, so no destructive confirmation is
+    // needed; a summary alert reports what was added.
+    @State private var showingImporter = false
+    @State private var restoreSummary: String?
+    @State private var importError: String?
 
-        Form {
+    private var settingsSections: some View {
+        @Bindable var settings = settings
+        return Group {
             Section {
                 PresetValuePicker("Advance warning", value: $settings.globalLeadTimeDays,
                                   presets: [0, 1, 3, 7, 14, 30], range: 0...90,
@@ -94,10 +104,27 @@ struct SettingsView: View {
                     Label("Preparing backup…", systemImage: "square.and.arrow.up")
                         .foregroundStyle(.secondary)
                 }
+                Button {
+                    showingImporter = true
+                } label: {
+                    Label("Restore from Backup…", systemImage: "square.and.arrow.down")
+                }
             } header: {
                 Text("Sync & Backup")
             } footer: {
-                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. Export shares a JSON backup of every context, item, and check (photos aren't included) — email it to yourself, save it to Files, or send it to a computer.")
+                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. Export shares a JSON backup of every context, item, and check (photos aren't included) — email it to yourself, save it to Files, or send it to a computer. Restore reads such a backup back in: it adds anything missing and never overwrites or deletes what's already here.")
+            }
+
+            Section {
+                Button {
+                    onReplayGuide()
+                } label: {
+                    Label("Show the Welcome Guide", systemImage: "questionmark.circle")
+                }
+            } header: {
+                Text("Help")
+            } footer: {
+                Text("Replay the short intro that explains Needs Attention, adding supplies, and checking items off.")
             }
 
             Section("About") {
@@ -105,34 +132,58 @@ struct SettingsView: View {
                 LabeledContent("Version", value: appVersion)
             }
         }
-        .navigationTitle("Settings")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") { dismiss() }
+    }
+
+    var body: some View {
+        Form { settingsSections }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
             }
-        }
-        .task {
-            await notifications.refreshAuthorizationStatus()
-            if settings.defaultIntervalMonths > 0 {
-                lastIntervalMonths = settings.defaultIntervalMonths
+            .task {
+                await notifications.refreshAuthorizationStatus()
+                if settings.defaultIntervalMonths > 0 {
+                    lastIntervalMonths = settings.defaultIntervalMonths
+                }
+                prepareBackup()
             }
-            prepareBackup()
-        }
-        .onChange(of: settings.globalLeadTimeDays) { _, _ in
-            rescheduleNotifications()
-        }
-        .onChange(of: settings.notificationFireHour) { _, _ in
-            rescheduleNotifications()   // re-add every pending request at the new hour
-        }
-        .alert("Export failed", isPresented: Binding(
-            get: { exportError != nil },
-            set: { if !$0 { exportError = nil } }
-        )) {
-            Button("OK", role: .cancel) { exportError = nil }
-        } message: {
-            if let exportError { Text(exportError) }
-        }
+            .onChange(of: settings.globalLeadTimeDays) { _, _ in
+                rescheduleNotifications()
+            }
+            .onChange(of: settings.notificationFireHour) { _, _ in
+                rescheduleNotifications()   // re-add every pending request at the new hour
+            }
+            .alert("Export failed", isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            )) {
+                Button("OK", role: .cancel) { exportError = nil }
+            } message: {
+                if let exportError { Text(exportError) }
+            }
+            .fileImporter(isPresented: $showingImporter,
+                          allowedContentTypes: [.json]) { result in
+                restore(from: result)
+            }
+            .alert("Backup restored", isPresented: Binding(
+                get: { restoreSummary != nil },
+                set: { if !$0 { restoreSummary = nil } }
+            )) {
+                Button("OK", role: .cancel) { restoreSummary = nil }
+            } message: {
+                if let restoreSummary { Text(restoreSummary) }
+            }
+            .alert("Restore failed", isPresented: Binding(
+                get: { importError != nil },
+                set: { if !$0 { importError = nil } }
+            )) {
+                Button("OK", role: .cancel) { importError = nil }
+            } message: {
+                if let importError { Text(importError) }
+            }
     }
 
     // MARK: Bindings / derived
@@ -223,6 +274,44 @@ struct SettingsView: View {
             backupURL = nil
             exportError = error.localizedDescription
         }
+    }
+
+    /// Reads a user-picked JSON backup and merges it into the store. The merge is
+    /// non-destructive (adds only), so it's safe to run without a wipe warning.
+    private func restore(from result: Result<URL, Error>) {
+        switch result {
+        case .failure(let error):
+            importError = error.localizedDescription
+        case .success(let url):
+            // Files picked outside the app's sandbox come security-scoped.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let export = try DataImporter.decode(data)
+                let summary = try DataImporter.merge(export, into: modelContext)
+                restoreSummary = restoreMessage(for: summary)
+                // New items may be due — refresh reminders + the freshly-exportable backup.
+                rescheduleNotifications()
+                prepareBackup()
+            } catch {
+                importError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Human-readable summary of a restore. Built in steps (no nested ternaries in
+    /// one interpolation) so the type-checker stays fast.
+    private func restoreMessage(for summary: DataImporter.Summary) -> String {
+        guard !summary.isEmpty else {
+            return "Everything in this backup is already here — nothing to add."
+        }
+        func phrase(_ count: Int, _ noun: String) -> String {
+            "\(count) \(noun)\(count == 1 ? "" : "s")"
+        }
+        return "Added \(phrase(summary.contextsAdded, "place")), "
+            + "\(phrase(summary.itemsAdded, "item")), and "
+            + "\(phrase(summary.checksAdded, "check"))."
     }
 }
 

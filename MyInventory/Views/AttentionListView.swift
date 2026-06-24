@@ -109,7 +109,8 @@ struct AttentionListView: View {
             item: item,
             status: item.status(leadTimeDays: lead),
             nextDueText: item.statusDetailLabel(globalLead: lead),
-            breadcrumb: breadcrumb(for: item)
+            breadcrumb: breadcrumb(for: item),
+            onCheck: { quickCheck(item) }
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)

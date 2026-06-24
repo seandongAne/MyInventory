@@ -17,6 +17,10 @@ struct ItemCard: View {
     /// "Vehicle › Emergency Kit" — shown in cross-context lists (attention view)
     /// where the user needs to know where the item physically lives.
     var breadcrumb: String? = nil
+    /// When set, a visible ✓ button is shown on the row so the most frequent
+    /// action — "looked at it, all good" — is one obvious tap, not a hidden swipe
+    /// or long-press. Tapping the rest of the row still opens the detail.
+    var onCheck: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: Theme.spacing6) {
@@ -71,9 +75,23 @@ struct ItemCard: View {
 
             Spacer(minLength: 0)
 
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Theme.textSecondary.opacity(0.5))
+            HStack(spacing: Theme.spacing4) {
+                if let onCheck {
+                    Button(action: onCheck) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.title2)
+                            .foregroundStyle(Theme.statusOK)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    // .borderless so the tap fires the check instead of selecting
+                    // the whole row (which opens the detail).
+                    .buttonStyle(.borderless)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Theme.textSecondary.opacity(0.5))
+            }
         }
         .padding(Theme.spacing6)
         .background(
@@ -88,6 +106,11 @@ struct ItemCard: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(item.name), \(status.style.label)")
+        .accessibilityActions {
+            if let onCheck {
+                Button("Mark as checked", action: onCheck)
+            }
+        }
     }
 
     @ViewBuilder private var thumbnail: some View {
