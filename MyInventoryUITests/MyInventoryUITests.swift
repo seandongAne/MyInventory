@@ -145,4 +145,33 @@ final class MyInventoryUITests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 5))
     }
+
+    /// The JSON backup goes through the system share sheet (so it can be emailed /
+    /// saved to Files / sent to a computer). The `ShareLink` only renders once
+    /// `prepareBackup()` has successfully written the file — so its appearance is
+    /// itself proof that the export ran at runtime without crashing — and tapping
+    /// it must present the share sheet.
+    @MainActor
+    func testExportSharesBackupViaShareSheet() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting"]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 10))
+        app.buttons["Settings"].tap()
+
+        // Backup prepared OK → the share button is shown (not stuck on
+        // "Preparing backup…") and no export-failed alert appeared.
+        let export = app.buttons["Export All Data…"]
+        XCTAssertTrue(export.waitForExistence(timeout: 6),
+                      "Backup should be prepared and the Export share button shown")
+        XCTAssertFalse(app.alerts["Export failed"].exists)
+
+        // Tapping opens the system share sheet (identifiers vary by iOS version, so
+        // accept either the activity container or the ubiquitous Copy action).
+        export.tap()
+        let appeared = app.otherElements["ActivityListView"].waitForExistence(timeout: 6)
+            || app.buttons["Copy"].waitForExistence(timeout: 2)
+        XCTAssertTrue(appeared, "Tapping Export should present the system share sheet")
+    }
 }

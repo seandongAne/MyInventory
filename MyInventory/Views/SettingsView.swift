@@ -21,9 +21,10 @@ struct SettingsView: View {
     // Remembers the last non-zero interval so toggling off then on restores it (M2).
     @State private var lastIntervalMonths: Int = 12
 
-    // Export
-    @State private var exportDocument: JSONExportDocument?
-    @State private var isExporting = false
+    // Export — a JSON backup written to a temp file and offered through the system
+    // share sheet (Mail / Save to Files / cloud drives / AirDrop), so it can leave
+    // the iPad to a computer in one tap. Photos are not included.
+    @State private var backupURL: URL?
     @State private var exportError: String?
 
     var body: some View {
@@ -83,15 +84,20 @@ struct SettingsView: View {
 
             Section {
                 LabeledContent("iCloud sync", value: "Local only")
-                Button {
-                    exportData()
-                } label: {
-                    Label("Export All Data…", systemImage: "square.and.arrow.up")
+                if let backupURL {
+                    ShareLink(item: backupURL,
+                              preview: SharePreview(backupURL.lastPathComponent,
+                                                    image: Image(systemName: "doc.text"))) {
+                        Label("Export All Data…", systemImage: "square.and.arrow.up")
+                    }
+                } else {
+                    Label("Preparing backup…", systemImage: "square.and.arrow.up")
+                        .foregroundStyle(.secondary)
                 }
             } header: {
                 Text("Sync & Backup")
             } footer: {
-                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. Export saves a JSON backup of every context, item, and check (photos aren't included).")
+                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. Export shares a JSON backup of every context, item, and check (photos aren't included) — email it to yourself, save it to Files, or send it to a computer.")
             }
 
             Section("About") {
@@ -111,22 +117,13 @@ struct SettingsView: View {
             if settings.defaultIntervalMonths > 0 {
                 lastIntervalMonths = settings.defaultIntervalMonths
             }
+            prepareBackup()
         }
         .onChange(of: settings.globalLeadTimeDays) { _, _ in
             rescheduleNotifications()
         }
         .onChange(of: settings.notificationFireHour) { _, _ in
             rescheduleNotifications()   // re-add every pending request at the new hour
-        }
-        .fileExporter(
-            isPresented: $isExporting,
-            document: exportDocument,
-            contentType: .json,
-            defaultFilename: DataExporter.defaultFilename()
-        ) { result in
-            if case .failure(let error) = result {
-                exportError = error.localizedDescription
-            }
         }
         .alert("Export failed", isPresented: Binding(
             get: { exportError != nil },
@@ -210,11 +207,20 @@ struct SettingsView: View {
         notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }
 
-    private func exportData() {
+    /// Writes the JSON backup to a temp file so the system share sheet can offer it
+    /// as a real file — emailed as an attachment, saved to Files, dropped into a
+    /// cloud drive, or AirDropped. Regenerated each time Settings opens.
+    private func prepareBackup() {
         do {
-            exportDocument = JSONExportDocument(data: try DataExporter.makeExport(from: modelContext))
-            isExporting = true
+            let data = try DataExporter.makeExport(from: modelContext)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(DataExporter.defaultFilename())
+                .appendingPathExtension("json")
+            try data.write(to: url, options: .atomic)
+            backupURL = url
+            exportError = nil
         } catch {
+            backupURL = nil
             exportError = error.localizedDescription
         }
     }

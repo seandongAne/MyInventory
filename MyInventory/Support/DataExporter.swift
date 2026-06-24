@@ -11,8 +11,6 @@
 
 import Foundation
 import SwiftData
-import SwiftUI
-import UniformTypeIdentifiers
 
 enum DataExporter {
 
@@ -110,22 +108,5 @@ enum DataExporter {
     static func defaultFilename(now: Date = .now) -> String {
         let day = now.formatted(.iso8601.year().month().day())
         return "MyInventory-\(day)"
-    }
-}
-
-/// Minimal FileDocument wrapper so SettingsView can hand the JSON to `.fileExporter`.
-struct JSONExportDocument: FileDocument {
-    static let readableContentTypes: [UTType] = [.json]
-
-    var data: Data
-
-    init(data: Data) { self.data = data }
-
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
     }
 }
