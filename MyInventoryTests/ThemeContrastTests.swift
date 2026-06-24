@@ -33,17 +33,20 @@ final class ThemeContrastTests: XCTestCase {
         assertAll(in: UITraitCollection(userInterfaceStyle: .dark), label: "dark")
     }
 
-    /// High-contrast (filled) badges: `badgeInkOnFill` on a solid status fill
-    /// must clear the same 4:1 bar in both modes. `.neverExpires` is excluded —
-    /// it stays tinted even in filled mode (see StatusBadge.filled).
+    /// High-contrast (filled) badges AND solid-fill buttons: `badgeInkOnFill`
+    /// on a solid status OR accent fill must clear the same 4:1 bar in both
+    /// modes. Covers the overdue count badges + the accent CTAs / PressableButton
+    /// (a hardcoded white only reached ~2.4:1 on the bright dark accent/overdue).
+    /// `.neverExpires` is excluded — it stays tinted even in filled mode
+    /// (see StatusBadge.filled).
     func testBadgeInkOnSolidStatusFillsInBothModes() {
-        let statusTints = tints.filter { $0.name.hasPrefix("status") }
+        let filledTints = tints.filter { $0.name.hasPrefix("status") || $0.name == "accent" }
         let traits: [(String, UITraitCollection)] = [
             ("light", UITraitCollection(userInterfaceStyle: .light)),
             ("dark", UITraitCollection(userInterfaceStyle: .dark)),
         ]
         for (label, trait) in traits {
-            for tint in statusTints {
+            for tint in filledTints {
                 let ratio = contrast(fg: UIColor(Theme.badgeInkOnFill),
                                      bg: UIColor(tint.color),
                                      in: trait)

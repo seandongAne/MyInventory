@@ -63,10 +63,15 @@ Per Dev Plan §10 the recommended defaults were used (change if the end user pre
   overdue/needs-attention pinned to top and row-tinted; per-item history in `ItemDetailView`.
 - **M3** — comment field supports **on-device keyboard dictation** (the mic key),
   offline, saved on the record. (See deferred note.)
-- **M4** — `NotificationManager`: authorization, per-item due + lead notifications with
-  stable `item-<uuid>-due/-lead` IDs, **rolling 90-day window capped at 60** to stay
-  under the iOS 64 limit, reschedule on check/edit/delete and on app foreground.
-  Never-expires items schedule nothing.
+- **M4** — `NotificationManager`: authorization, due + lead reminders **batched by
+  calendar day** (`due-day-`/`lead-day-`; a lone item keeps its `item-<uuid>-due/-lead`
+  ID so its deep link + Mark-as-Checked survive). **No look-ahead window** — every
+  FUTURE due is planned, sorted soonest-first, capped at 60 distinct days < the iOS 64
+  limit (the cap scales with due-days, not item count, so far-future e.g. 2-year
+  reminders stay armed across long gaps between app opens). Plus a single **attention
+  digest** for overdue/flagged/never-checked items and a once-only **inactivity nudge**
+  (~1 month out, pushed forward each reschedule). Reschedules on check/edit/delete and
+  on app foreground; never-expires items schedule nothing.
 - **M5** — debounced **fuzzy search** (`FuzzySearch`, Levenshtein/token scoring) over
   name/category/location; single **photo** via `PhotosPicker` (external storage);
   optional **storage location**. All optional, never block saving.
