@@ -94,6 +94,11 @@ MyInventory/
 For a full architecture map — the data model, delete rules, derived-status logic, and the
 conventions to preserve — see [`CLAUDE.md`](CLAUDE.md). Product docs live in [`docs/`](docs/).
 
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0** — see
+the [`LICENSE`](LICENSE) file for the full text.
+
 ## Acknowledgments
 
 Once more — **thank you, Charlie.** 🙏 This project exists for you.
