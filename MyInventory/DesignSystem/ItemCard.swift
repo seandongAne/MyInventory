@@ -2,7 +2,16 @@
 //  ItemCard.swift
 //  MyInventory
 //
-//  Primary list row: left accent bar + thumbnail + text block + StatusBadge.
+//  Primary item card for the vertical layout: a self-contained panel with the
+//  item's identity (thumbnail + name + status), its LAST CHECKED / INTERVAL /
+//  NEXT DUE stats, and inline Check / Edit / Delete actions — mirroring the
+//  teacher's "Supplies Check" demo while keeping our native styling.
+//
+//  • The identity area is a `NavigationLink(value:)` → pushes ItemDetailView
+//    (full detail + check history). Register the destination once on the host
+//    NavigationStack (ContentView).
+//  • Action buttons are `.borderless` so a tap fires the action instead of the
+//    surrounding link.
 //  Status is passed in already-derived; never recomputed here.
 //
 
@@ -13,24 +22,49 @@ import UIKit
 struct ItemCard: View {
     let item: SupplyItem
     let status: SupplyStatus
-    let nextDueText: String?
     /// "Vehicle › Emergency Kit" — shown in cross-context lists (attention view)
     /// where the user needs to know where the item physically lives.
     var breadcrumb: String? = nil
-    /// When set, a visible ✓ button is shown on the row so the most frequent
-    /// action — "looked at it, all good" — is one obvious tap, not a hidden swipe
-    /// or long-press. Tapping the rest of the row still opens the detail.
+    /// Quick "looked at it, all good" check. Shown as a prominent inline button.
     var onCheck: (() -> Void)? = nil
+    /// Opens the edit form (presented as a centered sheet by the call site).
+    var onEdit: (() -> Void)? = nil
+    /// Requests deletion — the call site routes this through a confirmation dialog.
+    var onDelete: (() -> Void)? = nil
+
+    private var hasActions: Bool { onCheck != nil || onEdit != nil || onDelete != nil }
 
     var body: some View {
-        HStack(spacing: Theme.spacing6) {
+        VStack(alignment: .leading, spacing: Theme.spacing6) {
+            NavigationLink(value: item) {
+                identityBlock
+            }
+            .buttonStyle(.plain)
 
-            // Leading status accent bar
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(status.style.color)
-                .frame(width: 4)
-                .frame(maxHeight: .infinity)
+            statsRow
 
+            if hasActions {
+                Divider()
+                actionRow
+            }
+        }
+        .padding(Theme.spacing6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            surfaceTint,
+            in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
+                .strokeBorder(status.style.color.opacity(status == .overdue || status == .needsAttention ? 0.35 : 0), lineWidth: 1)
+        )
+        .elevation(.card)
+    }
+
+    // MARK: Identity (tap → detail)
+
+    private var identityBlock: some View {
+        HStack(alignment: .top, spacing: Theme.spacing6) {
             thumbnail
 
             VStack(alignment: .leading, spacing: Theme.spacing2) {
@@ -54,13 +88,6 @@ struct ItemCard: View {
                         .lineLimit(1)
                 }
 
-                if let nextDueText {
-                    Text(nextDueText)
-                        .font(.subheadline)
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.textSecondary)
-                }
-
                 HStack(spacing: Theme.spacing4) {
                     StatusBadge(status: status)
                     if let loc = item.storageLocation, !loc.isEmpty {
@@ -74,65 +101,118 @@ struct ItemCard: View {
             }
 
             Spacer(minLength: 0)
-
-            HStack(spacing: Theme.spacing4) {
-                if let onCheck {
-                    Button(action: onCheck) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.title2)
-                            .foregroundStyle(Theme.statusOK)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Circle())
-                    }
-                    // .borderless so the tap fires the check instead of selecting
-                    // the whole row (which opens the detail).
-                    .buttonStyle(.borderless)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Theme.textSecondary.opacity(0.5))
-            }
         }
-        .padding(Theme.spacing6)
-        .background(
-            surfaceTint,
-            in: RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .strokeBorder(status.style.color.opacity(status == .overdue || status == .needsAttention ? 0.35 : 0), lineWidth: 1)
-        )
-        .elevation(.card)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.name), \(status.style.label)")
-        .accessibilityActions {
-            if let onCheck {
-                Button("Mark as checked", action: onCheck)
-            }
-        }
     }
 
     @ViewBuilder private var thumbnail: some View {
-        // Downsampled + cached — never decode the full stored image per row per render.
+        // Downsampled + cached — never decode the full stored image per card per render.
         if let data = item.photo,
            let ui = Thumbnailer.thumbnail(for: data, cacheKey: "\(item.uuid.uuidString)-\(data.count)") {
             Image(uiImage: ui)
                 .resizable()
                 .scaledToFill()
-                .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         } else {
             // No photo yet → name-matched default artwork (Iconography table).
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Theme.accentSoft)
-                .frame(width: 48, height: 48)
+                .frame(width: 56, height: 56)
                 .overlay(
                     Image(Iconography.itemIconName(forItemNamed: item.name))
-                        .iconSized(26)
+                        .iconSized(30)
                         .foregroundStyle(Theme.accent)
                 )
         }
+    }
+
+    // MARK: Stats (last checked / interval / next due)
+
+    private var statsRow: some View {
+        HStack(alignment: .top, spacing: Theme.spacing6) {
+            statBlock("LAST CHECKED", lastCheckedText)
+            statBlock("INTERVAL", intervalText)
+            statBlock("NEXT DUE", nextDueText)
+        }
+    }
+
+    private func statBlock(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Theme.textSecondary)
+            Text(value)
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var lastCheckedText: String {
+        guard let last = item.lastCheck?.date else { return "Never" }
+        return last.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private var intervalText: String {
+        guard let months = item.checkIntervalMonths else { return "Never" }
+        if months % 12 == 0 {
+            let years = months / 12
+            return "\(years) yr"
+        }
+        return "\(months) mo"
+    }
+
+    private var nextDueText: String {
+        guard let due = item.nextDueDate() else { return "—" }
+        return due.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    // MARK: Actions
+
+    private var actionRow: some View {
+        HStack(spacing: Theme.spacing4) {
+            if let onCheck {
+                actionButton("Check", systemImage: "checkmark.circle.fill",
+                             tint: Theme.statusOK, action: onCheck)
+            }
+            if let onEdit {
+                actionButton("Edit", systemImage: "pencil",
+                             tint: Theme.accent, action: onEdit)
+            }
+            Spacer(minLength: 0)
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.statusOverdue)
+                        .frame(width: 40, height: 34)
+                        .background(Theme.statusOverdue.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: Theme.controlCornerRadius, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                // .borderless so the tap fires Delete instead of the card's link.
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Delete \(item.name)")
+            }
+        }
+    }
+
+    private func actionButton(_ title: String, systemImage: String,
+                              tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .padding(.vertical, Theme.spacing4)
+                .padding(.horizontal, Theme.spacing6)
+                .background(tint, in: RoundedRectangle(cornerRadius: Theme.controlCornerRadius, style: .continuous))
+                .foregroundStyle(Theme.badgeInkOnFill)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
     }
 
     private var surfaceTint: Color {
@@ -189,17 +269,19 @@ private func makeItemCardPreviewContainer() -> ModelContainer {
     let ctx = container.mainContext
     let items = (try? ctx.fetch(FetchDescriptor<SupplyItem>())) ?? []
 
-    ScrollView {
-        LazyVStack(spacing: Theme.spacing6) {
-            ForEach(items) { item in
-                ItemCard(item: item,
-                         status: item.status(leadTimeDays: 14),
-                         nextDueText: item.statusDetailLabel(globalLead: 14))
+    return NavigationStack {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: Theme.spacing6)],
+                      spacing: Theme.spacing6) {
+                ForEach(items) { item in
+                    ItemCard(item: item,
+                             status: item.status(leadTimeDays: 14),
+                             onCheck: {}, onEdit: {}, onDelete: {})
+                }
             }
+            .padding(Theme.spacing8)
         }
-        .padding(.horizontal, Theme.spacing8)
-        .padding(.top, Theme.spacing6)
+        .background(ScreenBackground())
     }
-    .background(ScreenBackground())
     .modelContainer(container)
 }

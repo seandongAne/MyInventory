@@ -3,25 +3,28 @@
 //  MyInventory
 //
 //  Cross-context "Needs Attention" dashboard: every overdue / flagged /
-//  never-checked item in one list, sorted most-urgent-first. This is the
-//  "open the app and see what needs doing" view — so items can be checked
-//  off right here (swipe / long-press), without a detour through detail.
+//  never-checked item in one vertical grid, sorted most-urgent-first. This is
+//  the "open the app and see what needs doing" view — items can be checked off
+//  in place via the card's inline Check button, without a detour through detail.
 //
 
 import SwiftUI
 import SwiftData
 
 struct AttentionListView: View {
-    @Binding var selectedItem: SupplyItem?
-
     @Environment(\.modelContext) private var modelContext
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
     @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
 
+    @State private var editingItem: SupplyItem?
     @State private var itemPendingDeletion: SupplyItem?
     @State private var actionError: String?
+
+    private var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 300), spacing: Theme.spacing6, alignment: .top)]
+    }
 
     private var rows: [SupplyItem] {
         let lead = settings.globalLeadTimeDays
@@ -44,35 +47,28 @@ struct AttentionListView: View {
                     Text("Nothing is overdue, flagged, or waiting on a first check.")
                 }
             } else {
-                List(selection: $selectedItem) {
-                    Section {
-                        ForEach(rows) { item in
-                            itemRow(item)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Theme.spacing6) {
+                        header
+                        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: Theme.spacing6) {
+                            ForEach(rows) { item in
+                                itemCard(item)
+                            }
                         }
-                    } header: {
-                        HStack(spacing: Theme.spacing4) {
-                            Text("Across all contexts")
-                                .font(.title3.weight(.semibold))
-                                .fontDesign(.rounded)
-                                .foregroundStyle(Theme.textPrimary)
-                            Text("\(rows.count)")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(Theme.textSecondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Theme.textSecondary.opacity(0.15), in: Capsule())
-                            Spacer()
-                        }
-                        .textCase(nil)
-                        .padding(.vertical, Theme.spacing2)
                     }
+                    .padding(.horizontal, Theme.spacing8)
+                    .padding(.top, Theme.spacing6)
+                    .padding(.bottom, Theme.spacing16)
                 }
-                .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .background(ScreenBackground())
             }
         }
-        .navigationTitle("Needs Attention")
+        .sheet(item: $editingItem) { item in
+            NavigationStack {
+                ItemEditView(mode: .edit(item))
+            }
+        }
         .confirmationDialog(
             "Delete “\(itemPendingDeletion?.name ?? "")”?",
             isPresented: Binding(
@@ -101,49 +97,47 @@ struct AttentionListView: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: Theme.spacing4) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("NEEDS ATTENTION")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                Text("Across all contexts")
+                    .font(.largeTitle.weight(.bold))
+                    .fontDesign(.rounded)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+            Text("\(rows.count)")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Theme.textSecondary.opacity(0.15), in: Capsule())
+            Spacer()
+        }
+    }
+
     @ViewBuilder
-    private func itemRow(_ item: SupplyItem) -> some View {
-        let lead = settings.globalLeadTimeDays
-        let isSelected = selectedItem?.persistentModelID == item.persistentModelID
+    private func itemCard(_ item: SupplyItem) -> some View {
         ItemCard(
             item: item,
-            status: item.status(leadTimeDays: lead),
-            nextDueText: item.statusDetailLabel(globalLead: lead),
+            status: item.status(leadTimeDays: settings.globalLeadTimeDays),
             breadcrumb: breadcrumb(for: item),
-            onCheck: { quickCheck(item) }
+            onCheck: { quickCheck(item) },
+            onEdit: { editingItem = item },
+            onDelete: { itemPendingDeletion = item }
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .strokeBorder(Theme.accent, lineWidth: 2)
-                .opacity(isSelected ? 1 : 0)
-        )
-        .tag(item)
-        .listRowInsets(EdgeInsets(top: Theme.spacing2, leading: Theme.spacing8,
-                                  bottom: Theme.spacing2, trailing: Theme.spacing8))
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        // The whole point of this list is working through it — checking off an
-        // item is one swipe, same as in the context lists.
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                quickCheck(item)
-            } label: {
-                Label("Checked", systemImage: "checkmark.circle.fill")
-            }
-            .tint(Theme.statusOK)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                itemPendingDeletion = item
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
         .contextMenu {
             Button {
                 quickCheck(item)
             } label: {
                 Label("Mark as Checked", systemImage: "checkmark.circle")
+            }
+            Button {
+                editingItem = item
+            } label: {
+                Label("Edit", systemImage: "pencil")
             }
             Divider()
             Button(role: .destructive) {
@@ -179,7 +173,7 @@ struct AttentionListView: View {
 
     private func deleteItem(_ item: SupplyItem) {
         let uuid = item.uuid
-        let wasSelected = selectedItem?.persistentModelID == item.persistentModelID
+        if editingItem?.persistentModelID == item.persistentModelID { editingItem = nil }
         modelContext.delete(item)
         do {
             try modelContext.save()
@@ -188,7 +182,6 @@ struct AttentionListView: View {
             actionError = error.localizedDescription
             return
         }
-        if wasSelected { selectedItem = nil }
         notifications.cancelNotifications(forItemUUID: uuid)
         notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
     }

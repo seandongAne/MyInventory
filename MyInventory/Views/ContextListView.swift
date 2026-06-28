@@ -2,9 +2,11 @@
 //  ContextListView.swift
 //  MyInventory
 //
-//  Content column: a selected context's categories → items, grouped with cards.
-//  Overdue/needs-attention items are pinned to the top of each section.
-//  Fuzzy search flattens into a ranked card list.
+//  The selected context's items, laid out as a vertical scroll of category
+//  sections, each an adaptive grid of item cards (overdue/needs-attention items
+//  pinned to the top of their section). This is the main content of the vertical
+//  layout — no split-view detail column; tapping a card pushes ItemDetailView,
+//  the inline Edit button opens a centered edit sheet.
 //
 
 import SwiftUI
@@ -12,7 +14,6 @@ import SwiftData
 
 struct ContextListView: View {
     let context: SupplyContext
-    @Binding var selectedItem: SupplyItem?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(SettingsStore.self) private var settings
@@ -21,59 +22,47 @@ struct ContextListView: View {
     @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
     @Query(sort: \SupplyCategory.sortOrder) private var allCategories: [SupplyCategory]
 
-    @State private var searchText = ""
-    @State private var debouncedSearch = ""
     @State private var showingAddItem = false
     @State private var showingCategoryManager = false
     @State private var showingTemplates = false
+    @State private var editingItem: SupplyItem?
     @State private var bulkCheckCategory: SupplyCategory?
     @State private var itemPendingDeletion: SupplyItem?
     @State private var actionError: String?
 
+    private var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 300), spacing: Theme.spacing6, alignment: .top)]
+    }
+
     var body: some View {
-        Group {
-            if isSearching {
-                searchResultsList
-            } else if categories.isEmpty {
-                emptyContextState
-            } else {
-                groupedList
-            }
-        }
-        .navigationTitle(context.name)
-        .searchable(text: $searchText, prompt: "Search supplies")
-        .task(id: searchText) {
-            // On cancellation (a newer keystroke) bail out — otherwise the body
-            // would fall through and write immediately, defeating the debounce.
-            guard (try? await Task.sleep(for: .milliseconds(250))) != nil else { return }
-            debouncedSearch = searchText
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                // primaryAction keeps the common path one tap: tap = Add Item,
-                // long-press reveals the template option.
-                Menu {
-                    Button { showingAddItem = true } label: {
-                        Label("Add Item", systemImage: "plus")
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Theme.spacing12) {
+                header
+
+                if categories.isEmpty {
+                    emptyContextState
+                } else {
+                    ForEach(categories) { category in
+                        categorySection(category)
                     }
-                    Button { showingTemplates = true } label: {
-                        Label("Add from Template", systemImage: "list.bullet.rectangle")
-                    }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                } primaryAction: {
-                    showingAddItem = true
                 }
             }
-            ToolbarItem(placement: .topBarLeading) {
-                Button { showingCategoryManager = true } label: {
-                    Label("Categories", systemImage: "folder")
-                }
-            }
+            .padding(.horizontal, Theme.spacing8)
+            .padding(.top, Theme.spacing6)
+            .padding(.bottom, Theme.spacing16)
         }
+        .scrollContentBackground(.hidden)
+        .background(ScreenBackground())
         .sheet(isPresented: $showingAddItem) {
             NavigationStack {
                 ItemEditView(mode: .create(context: context))
+            }
+        }
+        // iPad renders a sheet as a centered form-sheet card — i.e. the demo's
+        // centered "Edit Item" modal, for free.
+        .sheet(item: $editingItem) { item in
+            NavigationStack {
+                ItemEditView(mode: .edit(item))
             }
         }
         .sheet(isPresented: $showingCategoryManager) {
@@ -132,69 +121,72 @@ struct ContextListView: View {
         }
     }
 
-    // MARK: Derived data
+    // MARK: Header
 
-    private var isSearching: Bool {
-        !debouncedSearch.trimmingCharacters(in: .whitespaces).isEmpty
-    }
-
-    private var contextItems: [SupplyItem] {
-        allItems.filter { $0.category?.context?.persistentModelID == context.persistentModelID }
-    }
-
-    private var categories: [SupplyCategory] {
-        allCategories
-            .filter { $0.context?.persistentModelID == context.persistentModelID }
-            .sorted { lhs, rhs in
-                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CURRENT PROGRAM")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                Text(context.name)
+                    .font(.largeTitle.weight(.bold))
+                    .fontDesign(.rounded)
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
             }
-    }
 
-    private func items(in category: SupplyCategory) -> [SupplyItem] {
-        contextItems
-            .filter { $0.category?.persistentModelID == category.persistentModelID }
-            .sorted(by: statusThenName)
-    }
+            Spacer()
 
-    private var searchResults: [SupplyItem] {
-        FuzzySearch.rank(contextItems, query: debouncedSearch)
-    }
+            HStack(spacing: Theme.spacing4) {
+                Button {
+                    showingCategoryManager = true
+                } label: {
+                    Label("Categories", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .tint(Theme.accent)
 
-    private func statusThenName(_ a: SupplyItem, _ b: SupplyItem) -> Bool {
-        let lead = settings.globalLeadTimeDays
-        let pa = a.status(leadTimeDays: lead).sortPriority
-        let pb = b.status(leadTimeDays: lead).sortPriority
-        if pa != pb { return pa < pb }
-        return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-    }
-
-    // MARK: Views
-
-    private var groupedList: some View {
-        List(selection: $selectedItem) {
-            ForEach(categories) { category in
-                let rows = items(in: category)
-                Section {
-                    if rows.isEmpty {
-                        Text("No items")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.textSecondary)
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                    } else {
-                        ForEach(rows) { item in
-                            itemRow(item)
-                        }
+                // Tap = Add Item; long-press reveals the template option.
+                Menu {
+                    Button { showingAddItem = true } label: {
+                        Label("Add Item", systemImage: "plus")
                     }
-                } header: {
-                    sectionHeader(name: category.name, count: rows.count, category: category)
+                    Button { showingTemplates = true } label: {
+                        Label("Add from Template", systemImage: "list.bullet.rectangle")
+                    }
+                } label: {
+                    Label("Add Item", systemImage: "plus")
+                } primaryAction: {
+                    showingAddItem = true
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .foregroundStyle(Theme.badgeInkOnFill)
+            }
+        }
+    }
+
+    // MARK: Sections
+
+    private func categorySection(_ category: SupplyCategory) -> some View {
+        let rows = items(in: category)
+        return VStack(alignment: .leading, spacing: Theme.spacing6) {
+            sectionHeader(name: category.name, count: rows.count,
+                          category: rows.isEmpty ? nil : category)
+
+            if rows.isEmpty {
+                Text("No items")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+            } else {
+                LazyVGrid(columns: gridColumns, alignment: .leading, spacing: Theme.spacing6) {
+                    ForEach(rows) { item in
+                        itemCard(item)
+                    }
                 }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(ScreenBackground())
     }
 
     private func sectionHeader(name: String, count: Int, category: SupplyCategory? = nil) -> some View {
@@ -225,50 +217,17 @@ struct ContextListView: View {
                 }
             }
         }
-        .textCase(nil)
-        .padding(.vertical, Theme.spacing2)
     }
 
-    /// One selectable item row. Driving selection through `List(selection:)` + `.tag`
-    /// (rather than a plain Button) is what lets NavigationSplitView push the detail
-    /// column on iPhone / compact width — and it still shows in-place on iPad (H1).
     @ViewBuilder
-    private func itemRow(_ item: SupplyItem) -> some View {
-        let lead = settings.globalLeadTimeDays
-        let isSelected = selectedItem?.persistentModelID == item.persistentModelID
+    private func itemCard(_ item: SupplyItem) -> some View {
         ItemCard(
             item: item,
-            status: item.status(leadTimeDays: lead),
-            nextDueText: item.statusDetailLabel(globalLead: lead),
-            onCheck: { quickCheck(item) }
+            status: item.status(leadTimeDays: settings.globalLeadTimeDays),
+            onCheck: { quickCheck(item) },
+            onEdit: { editingItem = item },
+            onDelete: { itemPendingDeletion = item }
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .strokeBorder(Theme.accent, lineWidth: 2)
-                .opacity(isSelected ? 1 : 0)
-        )
-        .tag(item)
-        .listRowInsets(EdgeInsets(top: Theme.spacing2, leading: Theme.spacing8,
-                                  bottom: Theme.spacing2, trailing: Theme.spacing8))
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        // The most frequent action — "looked at it, all good" — is one swipe,
-        // mirroring the notification's Mark-as-Checked action.
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                quickCheck(item)
-            } label: {
-                Label("Checked", systemImage: "checkmark.circle.fill")
-            }
-            .tint(Theme.statusOK)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                itemPendingDeletion = item
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
         .contextMenu { itemContextMenu(item) }
     }
 
@@ -278,6 +237,11 @@ struct ContextListView: View {
             quickCheck(item)
         } label: {
             Label("Mark as Checked", systemImage: "checkmark.circle")
+        }
+        Button {
+            editingItem = item
+        } label: {
+            Label("Edit", systemImage: "pencil")
         }
         let otherCategories = categories.filter {
             $0.persistentModelID != item.category?.persistentModelID
@@ -305,27 +269,6 @@ struct ContextListView: View {
         }
     }
 
-    private var searchResultsList: some View {
-        Group {
-            if searchResults.isEmpty {
-                ContentUnavailableView.search(text: debouncedSearch)
-            } else {
-                List(selection: $selectedItem) {
-                    Section {
-                        ForEach(searchResults) { item in
-                            itemRow(item)
-                        }
-                    } header: {
-                        sectionHeader(name: "Results", count: searchResults.count)
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .background(ScreenBackground())
-            }
-        }
-    }
-
     private var emptyContextState: some View {
         ContentUnavailableView {
             Label("No categories yet", systemImage: "folder")
@@ -348,6 +291,36 @@ struct ContextListView: View {
             }
             .buttonStyle(.bordered)
         }
+        .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    // MARK: Derived data
+
+    private var contextItems: [SupplyItem] {
+        allItems.filter { $0.category?.context?.persistentModelID == context.persistentModelID }
+    }
+
+    private var categories: [SupplyCategory] {
+        allCategories
+            .filter { $0.context?.persistentModelID == context.persistentModelID }
+            .sorted { lhs, rhs in
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private func items(in category: SupplyCategory) -> [SupplyItem] {
+        contextItems
+            .filter { $0.category?.persistentModelID == category.persistentModelID }
+            .sorted(by: statusThenName)
+    }
+
+    private func statusThenName(_ a: SupplyItem, _ b: SupplyItem) -> Bool {
+        let lead = settings.globalLeadTimeDays
+        let pa = a.status(leadTimeDays: lead).sortPriority
+        let pb = b.status(leadTimeDays: lead).sortPriority
+        if pa != pb { return pa < pb }
+        return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 
     // MARK: Mutations
@@ -364,21 +337,21 @@ struct ContextListView: View {
 
     private func deleteItem(_ item: SupplyItem) {
         let uuid = item.uuid
-        let wasSelected = selectedItem?.persistentModelID == item.persistentModelID
+        // The edit sheet may target the same item — clear it before the model dies.
+        if editingItem?.persistentModelID == item.persistentModelID { editingItem = nil }
         modelContext.delete(item)
         do {
             try modelContext.save()
         } catch {
             modelContext.rollback()
             actionError = error.localizedDescription
-            return   // item still exists; selection + notifications untouched (P2-a)
+            return   // item still exists; notifications untouched (P2-a)
         }
-        if wasSelected { selectedItem = nil }
         notifications.cancelNotifications(forItemUUID: uuid)
         rescheduleNotifications()
     }
 
-    /// One-swipe "looked at it, all good" — logs an OK check without the sheet.
+    /// One-tap "looked at it, all good" — logs an OK check without the sheet.
     /// (For a different result or a note, open the item and use "Check now".)
     private func quickCheck(_ item: SupplyItem) {
         let record = CheckRecord(date: .now, result: .ok)
@@ -472,7 +445,10 @@ private func makeContextListPreviewContainer() -> ModelContainer {
     let container = makeContextListPreviewContainer()
     let context = try! container.mainContext.fetch(FetchDescriptor<SupplyContext>()).first!
     NavigationStack {
-        ContextListView(context: context, selectedItem: .constant(nil))
+        ContextListView(context: context)
+            .navigationDestination(for: SupplyItem.self) { item in
+                ItemDetailView(item: item)
+            }
     }
     .modelContainer(container)
     .environment(SettingsStore())

@@ -2,19 +2,20 @@
 //  ContentView.swift
 //  MyInventory
 //
-//  Root three-column NavigationSplitView (Dev Plan §6.5):
-//   • Sidebar  — Needs Attention + the contexts (+ Settings)
-//   • Content  — the attention list, or a context's categories → items
-//   • Detail   — the selected item
+//  Root vertical single-page layout (replaces the old three-column
+//  NavigationSplitView per the teacher's "Supplies Check" demo):
+//   • a pinned horizontal "Programs" selector (Needs Attention + contexts)
+//   • below it, the selected program's items as a vertical grid of cards
+//   • tapping a card pushes ItemDetailView onto the stack (no detail column)
 //
-//  On iPhone / narrow multitasking this collapses to a single nav stack for free.
+//  Tuned for iPad (the only target device); it still runs on iPhone.
 //
 
 import SwiftUI
 import SwiftData
 import UIKit
 
-/// What the sidebar can select: the cross-context attention list, or one context.
+/// What the Programs bar can select: the cross-context attention list, or one context.
 enum SidebarSelection: Hashable {
     case attention
     case context(SupplyContext)
@@ -23,7 +24,6 @@ enum SidebarSelection: Hashable {
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.horizontalSizeClass) private var hSizeClass
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
@@ -31,9 +31,8 @@ struct ContentView: View {
     @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
 
     @State private var sidebarSelection: SidebarSelection?
-    @State private var selectedItem: SupplyItem?
+    @State private var path = NavigationPath()
     @State private var showingSettings = false
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var seedError: String?
 
     // First-run guide: welcome cards (all devices) → coach-marks (iPad only).
@@ -41,8 +40,8 @@ struct ContentView: View {
     @State private var runCoachmarks = false
     @State private var wantsCoachmarks = false
 
-    // App-wide search lives on the sidebar (root), so a user can find an item
-    // without first knowing which context (Vehicle/Bag/House) it lives in.
+    // App-wide search lives at the root, so a user can find an item without first
+    // knowing which context (Vehicle/Bag/House) it lives in.
     @State private var searchText = ""
     @State private var debouncedSearch = ""
     @State private var searchResultItem: SupplyItem?
@@ -56,14 +55,92 @@ struct ContentView: View {
     @State private var contextActionError: String?
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
-        } content: {
-            content
-        } detail: {
-            detail
+        NavigationStack(path: $path) {
+            ZStack {
+                ScreenBackground()
+                if isSearching {
+                    globalSearchResults
+                } else {
+                    mainContent
+                }
+            }
+            .navigationTitle("Supplies Check")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search all supplies")
+            .task(id: searchText) {
+                // On cancellation (a newer keystroke) bail out — otherwise the body
+                // would fall through and write immediately, defeating the debounce.
+                guard (try? await Task.sleep(for: .milliseconds(250))) != nil else { return }
+                debouncedSearch = searchText
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape.fill")
+                    }
+                }
+            }
+            // One destination registration serves every NavigationLink(value:) in
+            // the item cards (ContextListView / AttentionListView).
+            .navigationDestination(for: SupplyItem.self) { item in
+                ItemDetailView(item: item, onDelete: { if !path.isEmpty { path.removeLast() } })
+                    .id(item.persistentModelID)
+            }
+            // Tapping a global-search result opens the item directly.
+            .sheet(item: $searchResultItem) { item in
+                NavigationStack {
+                    ItemDetailView(item: item, onDelete: { searchResultItem = nil })
+                }
+            }
+            .alert("New Context", isPresented: $showingAddContext) {
+                TextField("Name (e.g. Cabin, Boat)", text: $newContextName)
+                Button("Add") { addContext() }
+                Button("Cancel", role: .cancel) { newContextName = "" }
+            } message: {
+                Text("Add a top-level place for your supplies, alongside Vehicle, Bag, and House.")
+            }
+            .alert("Rename Context", isPresented: Binding(
+                get: { contextPendingRename != nil },
+                set: { if !$0 { contextPendingRename = nil } }
+            )) {
+                TextField("Name", text: $renameContextName)
+                Button("Save") { renameContext() }
+                Button("Cancel", role: .cancel) { contextPendingRename = nil }
+            }
+            .confirmationDialog(
+                "Delete “\(contextPendingDeletion?.name ?? "")”?",
+                isPresented: Binding(
+                    get: { contextPendingDeletion != nil },
+                    set: { if !$0 { contextPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let context = contextPendingDeletion {
+                        contextPendingDeletion = nil
+                        deleteContext(context)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let context = contextPendingDeletion {
+                    let n = context.allItems.count
+                    Text(n == 0
+                         ? "This removes the context."
+                         : "This permanently deletes the context, its \(n) item\(n == 1 ? "" : "s"), and all their check history.")
+                }
+            }
+            .alert("Action failed", isPresented: Binding(
+                get: { contextActionError != nil },
+                set: { if !$0 { contextActionError = nil } }
+            )) {
+                Button("OK", role: .cancel) { contextActionError = nil }
+            } message: {
+                if let contextActionError { Text(contextActionError) }
+            }
         }
-        .navigationSplitViewStyle(.balanced)
         .tint(Theme.accent)
         .coachmarks(coachmarkSteps, isActive: $runCoachmarks, onFinish: completeOnboarding)
         .sheet(isPresented: $showingSettings) {
@@ -104,7 +181,9 @@ struct ContentView: View {
             applyInitialSidebarSelection()
         }
         .onChange(of: sidebarSelection) { _, _ in
-            selectedItem = nil   // item from another list no longer applies
+            // Switching programs returns to the list — a pushed detail from the
+            // previous program no longer applies.
+            path = NavigationPath()
         }
         .onChange(of: notifications.pendingDeepLink) { _, link in
             handleDeepLink(link)
@@ -116,148 +195,61 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Columns
+    // MARK: Main content
 
-    private var sidebar: some View {
-        Group {
-            if isSearching {
-                globalSearchResults
-            } else {
-                sidebarList
-            }
-        }
-        .navigationTitle("MyInventory")
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: "Search all supplies")
-        .task(id: searchText) {
-            // On cancellation (a newer keystroke) bail out — otherwise the body
-            // would fall through and write immediately, defeating the debounce.
-            guard (try? await Task.sleep(for: .milliseconds(250))) != nil else { return }
-            debouncedSearch = searchText
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    newContextName = ""
-                    showingAddContext = true
-                } label: {
-                    Label("Add Context", systemImage: "plus")
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingSettings = true
-                } label: {
-                    Label("Settings", systemImage: "gearshape.fill")
-                }
-            }
-        }
-        // Tapping a result opens the item directly — works the same on iPhone and
-        // iPad regardless of how the split view is collapsed.
-        .sheet(item: $searchResultItem) { item in
-            NavigationStack {
-                ItemDetailView(item: item, onDelete: {
-                    // The same item may also be selected in the detail column —
-                    // leaving it there would re-render a deleted model (crash).
-                    if selectedItem?.persistentModelID == item.persistentModelID {
-                        selectedItem = nil
-                    }
-                    searchResultItem = nil
-                })
-            }
-        }
-        .alert("New Context", isPresented: $showingAddContext) {
-            TextField("Name (e.g. Cabin, Boat)", text: $newContextName)
-            Button("Add") { addContext() }
-            Button("Cancel", role: .cancel) { newContextName = "" }
-        } message: {
-            Text("Add a top-level place for your supplies, alongside Vehicle, Bag, and House.")
-        }
-        .alert("Rename Context", isPresented: Binding(
-            get: { contextPendingRename != nil },
-            set: { if !$0 { contextPendingRename = nil } }
-        )) {
-            TextField("Name", text: $renameContextName)
-            Button("Save") { renameContext() }
-            Button("Cancel", role: .cancel) { contextPendingRename = nil }
-        }
-        .confirmationDialog(
-            "Delete “\(contextPendingDeletion?.name ?? "")”?",
-            isPresented: Binding(
-                get: { contextPendingDeletion != nil },
-                set: { if !$0 { contextPendingDeletion = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let context = contextPendingDeletion {
-                    contextPendingDeletion = nil
-                    deleteContext(context)
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            if let context = contextPendingDeletion {
-                let n = context.allItems.count
-                Text(n == 0
-                     ? "This removes the context."
-                     : "This permanently deletes the context, its \(n) item\(n == 1 ? "" : "s"), and all their check history.")
-            }
-        }
-        .alert("Action failed", isPresented: Binding(
-            get: { contextActionError != nil },
-            set: { if !$0 { contextActionError = nil } }
-        )) {
-            Button("OK", role: .cancel) { contextActionError = nil }
-        } message: {
-            if let contextActionError { Text(contextActionError) }
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            Text("Today, \(Date.now.formatted(date: .abbreviated, time: .omitted))")
+                .font(.subheadline)
+                .foregroundStyle(Theme.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Theme.spacing8)
+                .padding(.top, Theme.spacing4)
+
+            ProgramsBar(
+                contexts: contexts,
+                selection: $sidebarSelection,
+                attentionCount: attentionCount,
+                onAddContext: { newContextName = ""; showingAddContext = true },
+                onRename: { context in
+                    renameContextName = context.name
+                    contextPendingRename = context
+                },
+                onRequestDelete: { requestDeleteContext($0) }
+            )
+            .padding(.top, Theme.spacing4)
+
+            Divider()
+                .padding(.top, Theme.spacing4)
+
+            contentForSelection
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private var sidebarList: some View {
-        List(selection: $sidebarSelection) {
-            Section {
-                AttentionSidebarRow(count: attentionCount)
-                    .tag(SidebarSelection.attention)
-            }
-            Section("Supplies") {
-                ForEach(contexts) { context in
-                    ContextSidebarRow(context: context)
-                        .tag(SidebarSelection.context(context))
-                        // Long-press menu: more discoverable AND more reliable
-                        // than swipe on a split-view sidebar row (swipes there
-                        // often register as selection).
-                        .contextMenu {
-                            Button {
-                                renameContextName = context.name
-                                contextPendingRename = context
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                requestDeleteContext(context)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                }
-                .onDelete(perform: requestDeleteContext)
-            }
+    @ViewBuilder
+    private var contentForSelection: some View {
+        switch sidebarSelection {
+        case .attention:
+            AttentionListView()
+        case .context(let context):
+            ContextListView(context: context)
+                .id(context.persistentModelID)
+        case nil:
+            ContentUnavailableView(
+                "Select a Program",
+                systemImage: "square.grid.2x2",
+                description: Text("Pick a program above to see its supplies.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    /// First-launch landing. iPad has room for all three columns, so it opens
-    /// the first context. On iPhone (collapsed navigation) auto-pushing a
-    /// context would hide the search field and the attention overview behind a
-    /// Back button — so land on Needs Attention when something is due, else
-    /// stay on the sidebar. UI tests always stay on the sidebar.
+    /// First-launch landing: open the first context so items are visible right
+    /// away. UI tests stay on the placeholder and drive selection explicitly.
     private func applyInitialSidebarSelection() {
         guard sidebarSelection == nil, !isUITesting else { return }
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            if let first = contexts.first { sidebarSelection = .context(first) }
-        } else if attentionCount > 0 {
-            sidebarSelection = .attention
-        }
+        if let first = contexts.first { sidebarSelection = .context(first) }
     }
 
     private var attentionCount: Int {
@@ -296,37 +288,8 @@ struct ContentView: View {
                     Text("\(searchResults.count) result\(searchResults.count == 1 ? "" : "s")")
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch sidebarSelection {
-        case .attention:
-            AttentionListView(selectedItem: $selectedItem)
-        case .context(let context):
-            ContextListView(context: context, selectedItem: $selectedItem)
-                .id(context.persistentModelID)
-        case nil:
-            ContentUnavailableView(
-                "Select a context",
-                systemImage: "square.grid.2x2",
-                description: Text("Choose Vehicle, Bag, or House to see its supplies.")
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var detail: some View {
-        if let selectedItem {
-            ItemDetailView(item: selectedItem, onDelete: { self.selectedItem = nil })
-                .id(selectedItem.persistentModelID)
-        } else {
-            ContentUnavailableView(
-                "Select an item",
-                image: "icon-item-generic",
-                description: Text("Pick an item to see its details and check history.")
-            )
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
     }
 
@@ -355,9 +318,6 @@ struct ContentView: View {
     /// One short coach-mark shown after the welcome cards (iPad only). It points at
     /// the empty context's prominent "Start from a Template" button — a content
     /// element that's reliably present and correctly positioned on first launch.
-    /// (The sidebar's Needs Attention row can't be spotlighted reliably: the split
-    /// view collapses the sidebar in portrait. Needs Attention is covered by the
-    /// welcome cards instead.)
     private var coachmarkSteps: [CoachmarkStep] {
         [
             CoachmarkStep(target: .addFirst,
@@ -386,10 +346,10 @@ struct ContentView: View {
         showingWelcome = true
     }
 
-    /// After the welcome cards close: run coach-marks on iPad if the user tapped
+    /// After the welcome cards close: run coach-marks if the user tapped
     /// "Get Started" (not "Skip"); otherwise we're done.
     private func afterWelcome() {
-        if wantsCoachmarks && hSizeClass == .regular {
+        if wantsCoachmarks {
             runCoachmarks = true
         } else {
             completeOnboarding()
@@ -437,11 +397,6 @@ struct ContentView: View {
         }
     }
 
-    private func requestDeleteContext(_ offsets: IndexSet) {
-        guard let index = offsets.first else { return }
-        requestDeleteContext(contexts[index])
-    }
-
     private func requestDeleteContext(_ context: SupplyContext) {
         // Keep at least one context: the app always needs somewhere to put supplies,
         // and it stops the first-launch defaults from being re-seeded over an empty store.
@@ -484,6 +439,12 @@ struct ContentView: View {
         // deleting each item also removes its check history.
         let items = context.allItems
         let uuids = items.map(\.uuid)
+        let wasSelected: Bool = {
+            if case .context(let selected) = sidebarSelection {
+                return selected.persistentModelID == context.persistentModelID
+            }
+            return false
+        }()
         for item in items { modelContext.delete(item) }
         modelContext.delete(context)
 
@@ -495,10 +456,9 @@ struct ContentView: View {
             return
         }
 
-        if case .context(let selected) = sidebarSelection,
-           selected.persistentModelID == context.persistentModelID {
-            sidebarSelection = nil
-            selectedItem = nil
+        if wasSelected {
+            sidebarSelection = nil   // onChange(contexts) re-lands on the first context
+            path = NavigationPath()
         }
         // Reminders for the now-deleted items must be cancelled and the rest refreshed.
         for uuid in uuids { notifications.cancelNotifications(forItemUUID: uuid) }
@@ -511,82 +471,6 @@ struct ContentView: View {
         await notifications.refreshAuthorizationStatus()
         notifications.rescheduleAll(in: modelContext,
                                     globalLeadTimeDays: settings.globalLeadTimeDays)
-    }
-}
-
-// MARK: - Sidebar rows
-
-private struct AttentionSidebarRow: View {
-    let count: Int
-
-    var body: some View {
-        HStack(spacing: Theme.spacing6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Theme.statusOverdue.opacity(0.12))
-                    .frame(width: 36, height: 36)
-                Image("icon-status-attention")
-                    .iconSized(19)
-                    .foregroundStyle(Theme.statusOverdue)
-            }
-
-            Text("Needs Attention")
-
-            Spacer()
-
-            if count > 0 {
-                Text("\(count)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Theme.badgeInkOnFill)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Theme.statusOverdue, in: Capsule())
-            } else {
-                Image("icon-status-ok")
-                    .iconSized(15)
-                    .foregroundStyle(Theme.statusOK)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-private struct ContextSidebarRow: View {
-    let context: SupplyContext
-    @Environment(SettingsStore.self) private var settings
-
-    private var attentionCount: Int {
-        context.allItems.filter {
-            $0.status(leadTimeDays: settings.globalLeadTimeDays).isAttention
-        }.count
-    }
-
-    var body: some View {
-        let brand = SeedData.color(forContextNamed: context.name)
-        HStack(spacing: Theme.spacing6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(brand.opacity(0.14))
-                    .frame(width: 36, height: 36)
-                Image(Iconography.contextIconName(forContextNamed: context.name))
-                    .iconSized(20)
-                    .foregroundStyle(brand)
-            }
-
-            Text(context.name)
-
-            Spacer()
-
-            if attentionCount > 0 {
-                Text("\(attentionCount)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Theme.badgeInkOnFill)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Theme.statusOverdue, in: Capsule())
-            }
-        }
-        .padding(.vertical, 4)
     }
 }
 

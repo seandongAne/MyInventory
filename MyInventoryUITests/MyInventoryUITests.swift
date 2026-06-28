@@ -3,10 +3,11 @@
 //  MyInventoryUITests
 //
 //  End-to-end UI coverage: launch state, the cross-context global search, and
-//  context drill-down. Every test launches the app with `-uiTesting`, which makes
+//  selecting a program. Every test launches the app with `-uiTesting`, which makes
 //  it use a throwaway in-memory store seeded with deterministic sample data
-//  (SeedData.seedUITestSampleIfNeeded) and stay on the sidebar — so each run starts
-//  from a known state and never touches the user's real data.
+//  (SeedData.seedUITestSampleIfNeeded) and start on the Programs placeholder (no
+//  program selected) — so each run starts from a known state and never touches the
+//  user's real data.
 //
 
 import XCTest
@@ -24,8 +25,8 @@ final class MyInventoryUITests: XCTestCase {
         return app
     }
 
-    /// The app launches onto the sidebar showing the three seeded contexts and the
-    /// app-wide search field.
+    /// The app launches showing the three seeded programs in the Programs bar and
+    /// the app-wide search field.
     @MainActor
     func testLaunchShowsContextsAndGlobalSearch() throws {
         let app = launchApp()
@@ -55,7 +56,7 @@ final class MyInventoryUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Canned Tuna"].waitForExistence(timeout: 5))
     }
 
-    /// Selecting a context shows that context's items in the content column.
+    /// Selecting a program from the Programs bar shows that context's items below.
     @MainActor
     func testContextListShowsSeededItem() throws {
         let app = launchApp()
@@ -64,15 +65,14 @@ final class MyInventoryUITests: XCTestCase {
         XCTAssertTrue(vehicle.waitForExistence(timeout: 10))
         vehicle.tap()
 
-        // The item card combines its accessibility into one label
-        // ("First Aid Kit, <status>"), so match on a substring.
+        // The item card shows the item name as a static text.
         let card = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS[c] %@", "First Aid Kit"))
             .firstMatch
         XCTAssertTrue(card.waitForExistence(timeout: 5))
     }
 
-    /// Adding a context from the sidebar makes it appear in the list.
+    /// Adding a context from the Programs bar makes it appear as a new program card.
     @MainActor
     func testAddContextAppearsInSidebar() throws {
         let app = launchApp()
@@ -165,22 +165,33 @@ final class MyInventoryUITests: XCTestCase {
         app.buttons["Settings"].tap()
 
         // Backup prepared OK → the share button is shown (not stuck on
-        // "Preparing backup…") and no export-failed alert appeared.
+        // "Preparing backup…") and no export-failed alert appeared. On iPad the
+        // Settings sheet is a shorter page sheet whose List lazily renders rows, so
+        // export/restore (near the bottom) may start below the fold — scroll down
+        // until the lower of the two (Restore) is rendered; Export sits just above.
         let export = app.buttons["Export All Data…"]
+        let restore = app.buttons["Restore from Backup…"]
+        var scrolls = 0
+        while !restore.exists && scrolls < 8 {
+            app.swipeUp()
+            scrolls += 1
+        }
         XCTAssertTrue(export.waitForExistence(timeout: 6),
                       "Backup should be prepared and the Export share button shown")
         XCTAssertFalse(app.alerts["Export failed"].exists)
 
         // The restore counterpart is offered alongside export (it opens a system
         // file picker, which is owned by another process and not driven here).
-        XCTAssertTrue(app.buttons["Restore from Backup…"].exists,
+        XCTAssertTrue(restore.exists,
                       "Restore should be offered next to Export")
 
-        // Tapping opens the system share sheet (identifiers vary by iOS version, so
-        // accept either the activity container or the ubiquitous Copy action).
+        // Tapping opens the system share UI (a popover on iPad; identifiers vary by
+        // iOS version, so accept the activity container, the ubiquitous Copy action,
+        // or the popover itself).
         export.tap()
         let appeared = app.otherElements["ActivityListView"].waitForExistence(timeout: 6)
             || app.buttons["Copy"].waitForExistence(timeout: 2)
+            || app.popovers.firstMatch.waitForExistence(timeout: 2)
         XCTAssertTrue(appeared, "Tapping Export should present the system share sheet")
     }
 
@@ -209,8 +220,8 @@ final class MyInventoryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 8))
     }
 
-    /// The per-row ✓ button is visible and, being borderless, checks the item in
-    /// place rather than opening its detail. Captures a screenshot as evidence.
+    /// The card's inline "Check" button is borderless: a tap checks the item in
+    /// place rather than pushing its detail. Captures a screenshot as evidence.
     @MainActor
     func testItemRowCheckButtonChecksInPlace() throws {
         let app = XCUIApplication()
@@ -222,23 +233,22 @@ final class MyInventoryUITests: XCTestCase {
         vehicle.tap()
 
         XCTAssertTrue(app.staticTexts["First Aid Kit"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.navigationBars["Vehicle"].waitForExistence(timeout: 5))
 
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        shot.name = "context-list-with-check-button"
+        shot.name = "context-grid-with-check-button"
         shot.lifetime = .keepAlways
         add(shot)
 
-        // The ✓ sits at the right edge of the row. Coordinate-tap it (it's not a
-        // labeled element — the card combines its children for VoiceOver).
-        let card = app.cells.containing(.staticText, identifier: "First Aid Kit").firstMatch
-        XCTAssertTrue(card.waitForExistence(timeout: 5))
-        card.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.5)).tap()
+        // The card exposes a labeled "Check" button (sitting outside the card's
+        // navigation link), so tap it directly.
+        let check = app.buttons["Check"].firstMatch
+        XCTAssertTrue(check.waitForExistence(timeout: 5))
+        check.tap()
 
-        // Still on the Vehicle list — the ✓ checked the item rather than pushing
-        // its detail (which would replace the nav bar with "First Aid Kit").
-        XCTAssertTrue(app.navigationBars["Vehicle"].waitForExistence(timeout: 5))
+        // The check fired in place — it did NOT push the item detail (which would
+        // add a "First Aid Kit" navigation bar). We stay on the main screen.
+        XCTAssertTrue(app.navigationBars["Supplies Check"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["First Aid Kit"].exists,
-                       "Tapping ✓ must check in place, not open the detail")
+                       "Tapping Check must check in place, not open the detail")
     }
 }
