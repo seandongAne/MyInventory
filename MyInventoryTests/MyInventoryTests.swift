@@ -498,7 +498,8 @@ final class MyInventoryTests: XCTestCase {
         let restored = contexts.first?.allItems.first
         XCTAssertEqual(restored?.uuid, item.uuid)
         XCTAssertEqual(restored?.name, "First Aid Kit")
-        XCTAssertEqual(restored?.checkIntervalMonths, 6)
+        XCTAssertEqual(restored?.intervalValue, 6)
+        XCTAssertEqual(restored?.intervalUnit, "months")
         XCTAssertEqual(restored?.quantity, 2)
         XCTAssertEqual(restored?.leadTimeDaysOverride, 14)
         XCTAssertEqual(restored?.storageLocation, "Trunk")

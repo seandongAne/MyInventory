@@ -158,12 +158,8 @@ struct ItemCard: View {
     }
 
     private var intervalText: String {
-        guard let months = item.checkIntervalMonths else { return "Never" }
-        if months % 12 == 0 {
-            let years = months / 12
-            return "\(years) yr"
-        }
-        return "\(months) mo"
+        guard let value = item.intervalValue else { return "Never" }
+        return "\(value) \(item.intervalUnitValue.abbreviation)"
     }
 
     private var nextDueText: String {

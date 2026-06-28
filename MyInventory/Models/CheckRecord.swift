@@ -19,6 +19,10 @@ final class CheckRecord {
     // Optional free text; may be entered by voice dictation.
     var comment: String? = nil
 
+    // Last-modified timestamp for cross-platform sync (Phase 2). Checks are
+    // append-only, so this mainly future-proofs the schema alongside the others.
+    var modifiedAt: Date = Date.now
+
     var uuid: UUID = UUID()
 
     // Inverse of SupplyItem.checks.

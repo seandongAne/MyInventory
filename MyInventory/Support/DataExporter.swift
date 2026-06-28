@@ -15,7 +15,7 @@ import SwiftData
 enum DataExporter {
 
     struct Export: Codable {
-        var schemaVersion = 1
+        var schemaVersion = 2
         let exportedAt: Date
         let contexts: [ContextDTO]
     }
@@ -25,6 +25,7 @@ enum DataExporter {
         let name: String
         let sortOrder: Int
         let createdAt: Date
+        let modifiedAt: Date?
         let categories: [CategoryDTO]
     }
 
@@ -33,18 +34,26 @@ enum DataExporter {
         let name: String
         let sortOrder: Int
         let createdAt: Date
+        let modifiedAt: Date?
         let items: [ItemDTO]
     }
 
     struct ItemDTO: Codable {
         let uuid: UUID
         let name: String
-        let checkIntervalMonths: Int?
+        let intervalValue: Int?
+        let intervalUnit: String?
         let leadTimeDaysOverride: Int?
         let quantity: Int?
         let storageLocation: String?
+        let notes: String?
         let createdAt: Date
+        let modifiedAt: Date?
         let checks: [CheckDTO]
+
+        // Legacy schemaVersion-1 field (months only). Decode-only: the importer
+        // falls back to it when intervalValue/intervalUnit are absent.
+        let checkIntervalMonths: Int?
     }
 
     struct CheckDTO: Codable {
@@ -68,29 +77,35 @@ enum DataExporter {
                     name: context.name,
                     sortOrder: context.sortOrder,
                     createdAt: context.createdAt,
+                    modifiedAt: context.modifiedAt,
                     categories: context.unwrappedCategories.map { category in
                         CategoryDTO(
                             uuid: category.uuid,
                             name: category.name,
                             sortOrder: category.sortOrder,
                             createdAt: category.createdAt,
+                            modifiedAt: category.modifiedAt,
                             items: category.unwrappedItems
                                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                                 .map { item in
                                     ItemDTO(
                                         uuid: item.uuid,
                                         name: item.name,
-                                        checkIntervalMonths: item.checkIntervalMonths,
+                                        intervalValue: item.intervalValue,
+                                        intervalUnit: item.intervalUnit,
                                         leadTimeDaysOverride: item.leadTimeDaysOverride,
                                         quantity: item.quantity,
                                         storageLocation: item.storageLocation,
+                                        notes: item.notes,
                                         createdAt: item.createdAt,
+                                        modifiedAt: item.modifiedAt,
                                         checks: item.unwrappedChecks.map { check in
                                             CheckDTO(uuid: check.uuid,
                                                      date: check.date,
                                                      result: check.resultRaw,
                                                      comment: check.comment)
-                                        }
+                                        },
+                                        checkIntervalMonths: nil
                                     )
                                 }
                         )

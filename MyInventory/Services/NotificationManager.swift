@@ -310,7 +310,7 @@ final class NotificationManager {
         var leadByDay: [Date: [(uuid: UUID, days: Int)]] = [:]
 
         for item in items {
-            guard item.checkIntervalMonths != nil else { continue }   // never expires
+            guard item.intervalValue != nil else { continue }   // never expires
             guard let due = item.nextDueDate(calendar: calendar), due > now else { continue }
             dueByDay[calendar.startOfDay(for: due), default: []].append(item.uuid)
 

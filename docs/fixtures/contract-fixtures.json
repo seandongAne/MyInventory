@@ -1,0 +1,19 @@
+{
+  "_comment": "Shared cross-platform contract fixtures. Both the iOS (Swift) and Android (TS) test suites assert against THIS file so the two apps compute identical due dates. Keep the iOS and Android copies byte-identical. nextDue = lastChecked + value*unit, using calendar arithmetic with overflow-day clamping (end-of-month, leap years). All values are calendar dates (YYYY-MM-DD).",
+  "schemaVersion": 2,
+  "nextDueCases": [
+    { "id": "days-simple",        "lastChecked": "2026-01-01", "value": 10, "unit": "days",   "nextDue": "2026-01-11" },
+    { "id": "days-cross-month",   "lastChecked": "2026-12-20", "value": 30, "unit": "days",   "nextDue": "2027-01-19" },
+    { "id": "months-simple",      "lastChecked": "2026-01-15", "value": 3,  "unit": "months", "nextDue": "2026-04-15" },
+    { "id": "months-eom-clamp",   "lastChecked": "2026-01-31", "value": 1,  "unit": "months", "nextDue": "2026-02-28" },
+    { "id": "months-cross-year",  "lastChecked": "2026-11-15", "value": 3,  "unit": "months", "nextDue": "2027-02-15" },
+    { "id": "years-leap-clamp",   "lastChecked": "2024-02-29", "value": 1,  "unit": "years",  "nextDue": "2025-02-28" },
+    { "id": "years-simple",       "lastChecked": "2026-06-30", "value": 1,  "unit": "years",  "nextDue": "2027-06-30" }
+  ],
+  "daysUntilDueComment": "daysUntilDue = whole calendar days from `today` (start of day) to `nextDue` (start of day). Negative = overdue by N. Computed identically on both platforms.",
+  "daysUntilDueCases": [
+    { "id": "due-in-7",  "today": "2026-06-28", "nextDue": "2026-07-05", "days": 7 },
+    { "id": "due-today", "today": "2026-06-28", "nextDue": "2026-06-28", "days": 0 },
+    { "id": "overdue-7", "today": "2026-06-28", "nextDue": "2026-06-21", "days": -7 }
+  ]
+}

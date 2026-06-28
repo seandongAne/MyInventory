@@ -81,6 +81,7 @@ enum DataImporter {
                 let new = SupplyContext(name: contextDTO.name, sortOrder: contextDTO.sortOrder)
                 new.uuid = contextDTO.uuid
                 new.createdAt = contextDTO.createdAt
+                new.modifiedAt = contextDTO.modifiedAt ?? contextDTO.createdAt
                 modelContext.insert(new)
                 contextByUUID[contextDTO.uuid] = new
                 summary.contextsAdded += 1
@@ -92,6 +93,7 @@ enum DataImporter {
                     let new = SupplyCategory(name: categoryDTO.name, sortOrder: categoryDTO.sortOrder)
                     new.uuid = categoryDTO.uuid
                     new.createdAt = categoryDTO.createdAt
+                    new.modifiedAt = categoryDTO.modifiedAt ?? categoryDTO.createdAt
                     new.context = context
                     modelContext.insert(new)
                     categoryByUUID[categoryDTO.uuid] = new
@@ -102,10 +104,14 @@ enum DataImporter {
                 for itemDTO in categoryDTO.items {
                     let item = itemByUUID[itemDTO.uuid] ?? {
                         let new = SupplyItem(name: itemDTO.name,
-                                             checkIntervalMonths: itemDTO.checkIntervalMonths,
-                                             storageLocation: itemDTO.storageLocation)
+                                             storageLocation: itemDTO.storageLocation,
+                                             notes: itemDTO.notes)
                         new.uuid = itemDTO.uuid
                         new.createdAt = itemDTO.createdAt
+                        new.modifiedAt = itemDTO.modifiedAt ?? itemDTO.createdAt
+                        // Prefer the v2 value+unit; fall back to the legacy months field.
+                        new.intervalValue = itemDTO.intervalValue ?? itemDTO.checkIntervalMonths
+                        new.intervalUnit = itemDTO.intervalUnit ?? IntervalUnit.months.rawValue
                         new.leadTimeDaysOverride = itemDTO.leadTimeDaysOverride
                         new.quantity = itemDTO.quantity
                         new.category = category

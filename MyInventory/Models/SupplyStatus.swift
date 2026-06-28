@@ -21,9 +21,9 @@ extension SupplyItem {
 
     /// nextDue = lastCheck.date + interval. nil if never-expires OR never-checked.
     func nextDueDate(calendar: Calendar = .current) -> Date? {
-        guard let months = checkIntervalMonths else { return nil }   // never expires
+        guard let value = intervalValue else { return nil }          // never expires
         guard let last = lastCheck?.date else { return nil }         // never checked
-        return calendar.date(byAdding: .month, value: months, to: last)
+        return calendar.date(byAdding: intervalUnitValue.calendarComponent, value: value, to: last)
     }
 
     /// The effective lead time (per-item override, else the global default).
@@ -48,7 +48,7 @@ extension SupplyItem {
             return .needsAttention
         }
         // 3) No interval => never expires.
-        guard checkIntervalMonths != nil else { return .neverExpires }
+        guard intervalValue != nil else { return .neverExpires }
         // 4) Interval but never checked => due immediately (PRD Q1 default).
         guard let due = nextDueDate(calendar: calendar) else { return .neverChecked }
         // 5) Inside the lead-time window => due soon.

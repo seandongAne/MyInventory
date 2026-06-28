@@ -13,6 +13,10 @@ final class SupplyCategory {
     var name: String = ""
     var sortOrder: Int = 0
     var createdAt: Date = Date.now
+
+    // Last-modified timestamp for cross-platform last-write-wins sync (Phase 2).
+    var modifiedAt: Date = Date.now
+
     var uuid: UUID = UUID()
 
     // Inverse of SupplyContext.categories.

@@ -33,12 +33,14 @@ struct ItemEditView: View {
     @State private var selectedContext: SupplyContext?
     @State private var selectedCategory: SupplyCategory?
     @State private var hasInterval: Bool
-    @State private var intervalMonths: Int
+    @State private var intervalValue: Int
+    @State private var intervalUnit: IntervalUnit
     @State private var useDefaultLead: Bool
     @State private var leadDays: Int
     @State private var trackQuantity: Bool
     @State private var quantity: Int
     @State private var location: String
+    @State private var notes: String
     @State private var photoData: Data?
 
     @State private var photoItem: PhotosPickerItem? = nil
@@ -61,24 +63,28 @@ struct ItemEditView: View {
             _selectedContext = State(initialValue: context)
             _selectedCategory = State(initialValue: nil)
             _hasInterval = State(initialValue: false)
-            _intervalMonths = State(initialValue: 12)
+            _intervalValue = State(initialValue: 12)
+            _intervalUnit = State(initialValue: .months)
             _useDefaultLead = State(initialValue: true)
             _leadDays = State(initialValue: 7)   // updated in applyDefaultsIfNeeded
             _trackQuantity = State(initialValue: false)
             _quantity = State(initialValue: 1)
             _location = State(initialValue: "")
+            _notes = State(initialValue: "")
             _photoData = State(initialValue: nil)
         case .edit(let item):
             _name = State(initialValue: item.name)
             _selectedContext = State(initialValue: item.category?.context)
             _selectedCategory = State(initialValue: item.category)
-            _hasInterval = State(initialValue: item.checkIntervalMonths != nil)
-            _intervalMonths = State(initialValue: item.checkIntervalMonths ?? 12)
+            _hasInterval = State(initialValue: item.intervalValue != nil)
+            _intervalValue = State(initialValue: item.intervalValue ?? 12)
+            _intervalUnit = State(initialValue: item.intervalUnitValue)
             _useDefaultLead = State(initialValue: item.leadTimeDaysOverride == nil)
             _leadDays = State(initialValue: item.leadTimeDaysOverride ?? 7)  // updated in applyDefaultsIfNeeded
             _trackQuantity = State(initialValue: item.quantity != nil)
             _quantity = State(initialValue: item.quantity ?? 1)
             _location = State(initialValue: item.storageLocation ?? "")
+            _notes = State(initialValue: item.notes ?? "")
             _photoData = State(initialValue: item.photo)
         }
     }
@@ -91,6 +97,7 @@ struct ItemEditView: View {
             leadSection
             quantitySection
             locationSection
+            notesSection
             photoSection
         }
         .navigationTitle(isEditing ? "Edit Item" : "New Item")
@@ -198,9 +205,15 @@ struct ItemEditView: View {
         Section {
             Toggle("Set a re-check interval", isOn: $hasInterval)
             if hasInterval {
-                PresetValuePicker("Every", value: $intervalMonths,
-                                  presets: [1, 3, 6, 12, 24], range: 1...240,
-                                  format: monthsLabel)
+                Picker("Unit", selection: $intervalUnit) {
+                    ForEach(IntervalUnit.allCases) { unit in
+                        Text(unit.displayName).tag(unit)
+                    }
+                }
+                .pickerStyle(.segmented)
+                PresetValuePicker("Every", value: $intervalValue,
+                                  presets: intervalPresets, range: 1...intervalRangeMax,
+                                  format: { "\($0) \(intervalUnit.noun(for: $0))" })
             }
         } header: {
             Text("Re-check interval")
@@ -246,6 +259,13 @@ struct ItemEditView: View {
     private var locationSection: some View {
         Section("Storage location (optional)") {
             TextField("e.g. Garage shelf 2", text: $location)
+        }
+    }
+
+    private var notesSection: some View {
+        Section("Notes (optional)") {
+            TextField("e.g. Rotate before winter", text: $notes, axis: .vertical)
+                .lineLimit(1...4)
         }
     }
 
@@ -302,14 +322,24 @@ struct ItemEditView: View {
             .filter { $0.context?.persistentModelID == selectedContext.persistentModelID }
     }
 
-    private var intervalDescription: String { monthsLabel(intervalMonths) }
+    private var intervalDescription: String {
+        "\(intervalValue) \(intervalUnit.noun(for: intervalValue))"
+    }
 
-    private func monthsLabel(_ months: Int) -> String {
-        if months % 12 == 0 {
-            let years = months / 12
-            return "\(years) year\(years == 1 ? "" : "s")"
+    private var intervalPresets: [Int] {
+        switch intervalUnit {
+        case .days: return [7, 14, 30, 60, 90]
+        case .months: return [1, 3, 6, 12, 24]
+        case .years: return [1, 2, 3, 5]
         }
-        return "\(months) month\(months == 1 ? "" : "s")"
+    }
+
+    private var intervalRangeMax: Int {
+        switch intervalUnit {
+        case .days: return 365
+        case .months: return 240
+        case .years: return 50
+        }
     }
 
     private var canSave: Bool {
@@ -327,7 +357,8 @@ struct ItemEditView: View {
         case .create:
             if let def = settings.defaultIntervalMonthsOrNil {
                 hasInterval = true
-                intervalMonths = def
+                intervalValue = def
+                intervalUnit = .months
             }
             // Prime the custom-lead stepper from the global default (B4).
             leadDays = settings.globalLeadTimeDays
@@ -375,7 +406,8 @@ struct ItemEditView: View {
         guard let context = selectedContext else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLocation = location.trimmingCharacters(in: .whitespacesAndNewlines)
-        let interval = hasInterval ? intervalMonths : nil
+        let trimmedNotes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let interval = hasInterval ? intervalValue : nil
         let leadOverride = useDefaultLead ? nil : leadDays
         // No category chosen → file under the context's Uncategorized bucket
         // (created in the same save, rolled back together on failure).
@@ -384,8 +416,11 @@ struct ItemEditView: View {
 
         switch mode {
         case .create:
-            let item = SupplyItem(name: trimmedName, checkIntervalMonths: interval)
+            let item = SupplyItem(name: trimmedName)
             item.category = category
+            item.intervalValue = interval
+            item.intervalUnit = intervalUnit.rawValue
+            item.notes = trimmedNotes.isEmpty ? nil : trimmedNotes
             item.leadTimeDaysOverride = leadOverride
             item.quantity = trackQuantity ? quantity : nil
             item.storageLocation = trimmedLocation.isEmpty ? nil : trimmedLocation
@@ -401,7 +436,9 @@ struct ItemEditView: View {
         case .edit(let item):
             item.name = trimmedName
             item.category = category
-            item.checkIntervalMonths = interval
+            item.intervalValue = interval
+            item.intervalUnit = intervalUnit.rawValue
+            item.notes = trimmedNotes.isEmpty ? nil : trimmedNotes
             item.leadTimeDaysOverride = leadOverride
             item.quantity = trackQuantity ? quantity : nil
             item.storageLocation = trimmedLocation.isEmpty ? nil : trimmedLocation

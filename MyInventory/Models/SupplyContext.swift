@@ -21,6 +21,9 @@ final class SupplyContext {
     var sortOrder: Int = 0
     var createdAt: Date = Date.now
 
+    // Last-modified timestamp for cross-platform last-write-wins sync (Phase 2).
+    var modifiedAt: Date = Date.now
+
     // Stable, non-DB-enforced identifier (CloudKit forbids .unique).
     var uuid: UUID = UUID()
 

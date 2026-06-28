@@ -176,13 +176,16 @@ struct ItemDetailView: View {
                 detailRow("Quantity", value: "\(quantity)")
             }
             detailRow("Re-check interval", value: intervalText)
-            if item.checkIntervalMonths != nil {
+            if item.intervalValue != nil {
                 detailRow("Next due", value: nextDueText)
                 detailRow("Advance warning", value: leadText)
             }
             detailRow("Last checked", value: lastCheckedText)
             if item.hasLocation {
                 detailRow("Location", value: item.storageLocation ?? "")
+            }
+            if item.hasNotes {
+                detailRow("Notes", value: item.notes ?? "")
             }
         }
         .cardStyle()
@@ -240,12 +243,8 @@ struct ItemDetailView: View {
     // MARK: Derived text
 
     private var intervalText: String {
-        guard let months = item.checkIntervalMonths else { return "Never expires" }
-        if months % 12 == 0 {
-            let years = months / 12
-            return "Every \(years) year\(years == 1 ? "" : "s")"
-        }
-        return "Every \(months) month\(months == 1 ? "" : "s")"
+        guard let value = item.intervalValue else { return "Never expires" }
+        return "Every \(value) \(item.intervalUnitValue.noun(for: value))"
     }
 
     private var nextDueText: String {
