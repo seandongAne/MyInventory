@@ -38,6 +38,13 @@ struct SettingsView: View {
     @State private var restoreSummary: String?
     @State private var importError: String?
 
+    // Encrypted backup (SCBK1) — the cross-platform, end-to-end-encrypted `.scbk`
+    // file. Export runs through a passphrase + one-time recovery-key sheet; import
+    // picks a `.scbk`, parses the envelope, then unlocks it in `pendingRestore`.
+    @State private var showingEncryptedExport = false
+    @State private var showingEncryptedImporter = false
+    @State private var pendingRestore: PendingRestore?
+
     private var settingsSections: some View {
         @Bindable var settings = settings
         return Group {
@@ -93,12 +100,29 @@ struct SettingsView: View {
             }
 
             Section {
+                Button {
+                    showingEncryptedExport = true
+                } label: {
+                    Label("Create Encrypted Backup…", systemImage: "lock.doc")
+                }
+                Button {
+                    showingEncryptedImporter = true
+                } label: {
+                    Label("Restore Encrypted Backup…", systemImage: "lock.open")
+                }
+            } header: {
+                Text("Encrypted Backup")
+            } footer: {
+                Text("Creates an encrypted .scbk file you can keep in any cloud drive and restore on your other device — it works across iPad and Android. Only your passphrase or recovery key can open it; the cloud never sees your data. Restoring adds anything missing and never overwrites or deletes what's already here.")
+            }
+
+            Section {
                 LabeledContent("iCloud sync", value: "Local only")
                 if let backupURL {
                     ShareLink(item: backupURL,
                               preview: SharePreview(backupURL.lastPathComponent,
                                                     image: Image(systemName: "doc.text"))) {
-                        Label("Export All Data…", systemImage: "square.and.arrow.up")
+                        Label("Export Unencrypted Copy…", systemImage: "square.and.arrow.up")
                     }
                 } else {
                     Label("Preparing backup…", systemImage: "square.and.arrow.up")
@@ -107,12 +131,12 @@ struct SettingsView: View {
                 Button {
                     showingImporter = true
                 } label: {
-                    Label("Restore from Backup…", systemImage: "square.and.arrow.down")
+                    Label("Restore Unencrypted Copy…", systemImage: "square.and.arrow.down")
                 }
             } header: {
-                Text("Sync & Backup")
+                Text("Sync & Plain Export")
             } footer: {
-                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. Export shares a JSON backup of every context, item, and check (photos aren't included) — email it to yourself, save it to Files, or send it to a computer. Restore reads such a backup back in: it adds anything missing and never overwrites or deletes what's already here.")
+                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. This plain JSON copy is NOT encrypted — anyone who opens the file can read it, so keep it private. It includes every context, item, and check (photos aren't included). Prefer the encrypted backup above for anything you put in the cloud.")
             }
 
             Section {
@@ -184,7 +208,24 @@ struct SettingsView: View {
             } message: {
                 if let importError { Text(importError) }
             }
+            .sheet(isPresented: $showingEncryptedExport) {
+                EncryptedBackupSheet(makePlaintext: {
+                    String(decoding: try DataExporter.makeExport(from: modelContext), as: UTF8.self)
+                })
+            }
+            .sheet(item: $pendingRestore) { pending in
+                EncryptedRestoreSheet(envelope: pending.envelope, onDecrypted: mergeDecrypted)
+            }
+            .fileImporter(isPresented: $showingEncryptedImporter,
+                          allowedContentTypes: [Self.scbkContentType]) { result in
+                handlePickedEncryptedBackup(result)
+            }
     }
+
+    /// `.scbk` content type, resolved from the filename extension. SCBK1 files
+    /// aren't a registered system type, so this dynamic type lets the picker show
+    /// them without declaring an exported UTType in the (generated) Info.plist.
+    private static let scbkContentType: UTType = UTType(filenameExtension: "scbk") ?? .data
 
     // MARK: Bindings / derived
 
@@ -297,6 +338,42 @@ struct SettingsView: View {
             } catch {
                 importError = error.localizedDescription
             }
+        }
+    }
+
+    /// Reads a user-picked `.scbk`, parses the envelope, and (on success) hands it
+    /// to the unlock sheet. Decryption itself happens there; here we only validate
+    /// the file is a backup so a wrong pick fails fast with a clear message.
+    private func handlePickedEncryptedBackup(_ result: Result<URL, Error>) {
+        switch result {
+        case .failure(let error):
+            importError = error.localizedDescription
+        case .success(let url):
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let envelope = try BackupCrypto.parseEnvelope(data)
+                pendingRestore = PendingRestore(envelope: envelope)
+            } catch {
+                importError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Merges decrypted backup JSON (from the unlock sheet) into the store — same
+    /// non-destructive additive merge as the plain restore, then refresh reminders
+    /// and the exportable copy.
+    private func mergeDecrypted(_ plaintext: String) {
+        do {
+            let export = try DataImporter.decode(Data(plaintext.utf8))
+            let summary = try DataImporter.merge(export, into: modelContext)
+            restoreSummary = restoreMessage(for: summary)
+            rescheduleNotifications()
+            prepareBackup()
+            Haptics.success()
+        } catch {
+            importError = error.localizedDescription
         }
     }
 
