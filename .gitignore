@@ -31,6 +31,7 @@ Dependencies/
 .accio/
 
 # fastlane (if ever used)
+fastlane/.env
 fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png

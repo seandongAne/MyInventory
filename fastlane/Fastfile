@@ -6,7 +6,9 @@
 # ("MyInventory App Store" / "MyInventory Widgets App Store", valid to 2027-06-10)
 # are installed under ~/Library/MobileDevice/Provisioning Profiles.
 #
-# The ASC API key (.p8) is NOT committed — only the non-secret IDs are. The key
+# The ASC API key (.p8) is NOT committed. The account-specific IDs are read from
+# the environment (see fastlane/.env.example) so they stay out of the public repo;
+# copy that file to fastlane/.env (git-ignored) and fill in your own values. The key
 # can upload to TestFlight and manage builds/groups, but CANNOT create App records
 # or App Groups (those need Apple-ID auth in the web UI).
 #
@@ -17,10 +19,14 @@
 
 default_platform(:ios)
 
-ASC_KEY_ID     = "UC9PT8ZAM2"
-ASC_ISSUER_ID  = "73408141-4165-4bcc-b4dd-ab3974c70d9d"
+def env!(name)
+  ENV[name] || UI.user_error!("Missing env var #{name} — copy fastlane/.env.example to fastlane/.env and fill it in")
+end
+
+ASC_KEY_ID     = env!("ASC_KEY_ID")
+ASC_ISSUER_ID  = env!("ASC_ISSUER_ID")
 ASC_KEY_PATH   = File.expand_path("~/.appstoreconnect/private_keys/AuthKey_#{ASC_KEY_ID}.p8")
-TEAM_ID        = "974NJFKQLF"
+TEAM_ID        = env!("ASC_TEAM_ID")
 APP_BUNDLE     = "CharlieW.MyInventory"
 WIDGET_BUNDLE  = "CharlieW.MyInventory.MyInventoryWidgets"
 INTERNAL_GROUP = "Solo Test"
