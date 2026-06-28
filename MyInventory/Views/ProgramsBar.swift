@@ -168,7 +168,11 @@ struct ProgramsBar: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background((active ? color : Theme.textSecondary).opacity(0.14), in: Capsule())
+            // Two pills share a fixed-width (168pt) card. Normal counts fit, but
+            // 3-digit counts or longer localized labels must scale down to fit
+            // rather than truncate/overflow the card on an 11" iPad.
             .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     // MARK: Selection helpers
