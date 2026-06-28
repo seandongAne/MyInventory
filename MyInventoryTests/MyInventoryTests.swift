@@ -449,7 +449,41 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(exportedItem?.name, "First Aid Kit")
         XCTAssertEqual(exportedItem?.quantity, 2)
         XCTAssertEqual(exportedItem?.checks.count, 1)
-        XCTAssertEqual(exportedItem?.checks.first?.result, CheckResult.replaced.rawValue)
+        // Wire result is the canonical lowercase value, not the internal rawValue.
+        XCTAssertEqual(exportedItem?.checks.first?.result, CheckResult.replaced.wireValue)
+        XCTAssertEqual(exportedItem?.checks.first?.result, "replaced")
+        // uuids serialize lowercase; check dates are calendar YYYY-MM-DD.
+        XCTAssertEqual(exportedItem?.uuid, item.uuid.uuidString.lowercased())
+        XCTAssertEqual(exportedItem?.checks.first?.date.count, 10)
+        XCTAssertNotNil(DataExporter.parseWireDate(exportedItem?.checks.first?.date ?? ""))
+    }
+
+    /// iOS must parse the SHARED canonical wire payload (the decrypted SCBK1
+    /// sample, authored cross-platform): lowercase uuids, `YYYY-MM-DD` check
+    /// dates, lowercase results, instants without fractional seconds. This is the
+    /// import side of cross-platform interop. (Crypto interop is covered once the
+    /// SCBK1 core lands; this proves the plaintext contract.)
+    func testImportsCanonicalCrossPlatformWirePayload() throws {
+        let payload = """
+        {"schemaVersion":2,"exportedAt":"2026-06-28T12:00:00Z","contexts":[{"uuid":"11111111-1111-4111-8111-111111111111","name":"Vehicle","sortOrder":0,"createdAt":"2026-06-01T00:00:00Z","modifiedAt":"2026-06-01T00:00:00Z","categories":[{"uuid":"22222222-2222-4222-8222-222222222222","name":"Uncategorized","sortOrder":0,"createdAt":"2026-06-01T00:00:00Z","modifiedAt":"2026-06-01T00:00:00Z","items":[{"uuid":"33333333-3333-4333-8333-333333333333","name":"4L water","intervalValue":1,"intervalUnit":"months","leadTimeDaysOverride":null,"quantity":2,"storageLocation":"trunk","notes":"Rotate monthly","createdAt":"2026-06-01T00:00:00Z","modifiedAt":"2026-06-10T00:00:00Z","checks":[{"uuid":"44444444-4444-4444-8444-444444444444","date":"2026-06-10","result":"ok","comment":null}]}]}]}]}
+        """
+        let export = try DataImporter.decode(Data(payload.utf8))
+        let destStore = try makeEmptyStore()
+        let dest = destStore.mainContext
+        let summary = try DataImporter.merge(export, into: dest)
+        XCTAssertEqual(summary, DataImporter.Summary(contextsAdded: 1, categoriesAdded: 1,
+                                                     itemsAdded: 1, checksAdded: 1))
+
+        let item = try XCTUnwrap(try dest.fetch(FetchDescriptor<SupplyContext>()).first?.allItems.first)
+        XCTAssertEqual(item.uuid, UUID(uuidString: "33333333-3333-4333-8333-333333333333"))
+        XCTAssertEqual(item.name, "4L water")
+        XCTAssertEqual(item.intervalValue, 1)
+        XCTAssertEqual(item.intervalUnit, "months")
+        XCTAssertEqual(item.storageLocation, "trunk")
+        XCTAssertEqual(item.quantity, 2)
+        let check = try XCTUnwrap(item.lastCheck)
+        XCTAssertEqual(check.result, .ok)
+        XCTAssertEqual(DataExporter.wireDate(check.date), "2026-06-10")
     }
 
     // MARK: - Import / Restore

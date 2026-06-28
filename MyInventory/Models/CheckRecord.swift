@@ -62,3 +62,28 @@ enum CheckResult: String, CaseIterable, Identifiable {
         }
     }
 }
+
+extension CheckResult {
+    /// Canonical cross-platform wire value (see docs/SCBK1_Format.md §5). The
+    /// stored `rawValue` ("OK"/"Replaced"/"Needs attention") is iOS-internal;
+    /// backups use these lowercase values so Android (which uses them natively)
+    /// round-trips with iOS.
+    var wireValue: String {
+        switch self {
+        case .ok: return "ok"
+        case .replaced: return "replaced"
+        case .needsAttention: return "needsAttention"
+        }
+    }
+
+    /// Decode a wire result, tolerating legacy iOS raw values ("OK"/"Replaced"/
+    /// "Needs attention") from pre-S2 `.json` backups. Unknown → `.ok`.
+    init(wireValue: String) {
+        switch wireValue {
+        case "ok", "OK": self = .ok
+        case "replaced", "Replaced": self = .replaced
+        case "needsAttention", "Needs attention": self = .needsAttention
+        default: self = .ok
+        }
+    }
+}

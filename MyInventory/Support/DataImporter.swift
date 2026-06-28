@@ -77,36 +77,42 @@ enum DataImporter {
         var checkUUIDs = Set(try modelContext.fetch(FetchDescriptor<CheckRecord>()).map(\.uuid))
 
         for contextDTO in export.contexts {
-            let context = contextByUUID[contextDTO.uuid] ?? {
+            // Wire uuids are strings (lowercase); `UUID` matching is value-based,
+            // so case differences across platforms collapse here. A malformed id
+            // gets a fresh UUID so it imports as new rather than aborting.
+            let contextUUID = UUID(uuidString: contextDTO.uuid) ?? UUID()
+            let context = contextByUUID[contextUUID] ?? {
                 let new = SupplyContext(name: contextDTO.name, sortOrder: contextDTO.sortOrder)
-                new.uuid = contextDTO.uuid
+                new.uuid = contextUUID
                 new.createdAt = contextDTO.createdAt
                 new.modifiedAt = contextDTO.modifiedAt ?? contextDTO.createdAt
                 modelContext.insert(new)
-                contextByUUID[contextDTO.uuid] = new
+                contextByUUID[contextUUID] = new
                 summary.contextsAdded += 1
                 return new
             }()
 
             for categoryDTO in contextDTO.categories {
-                let category = categoryByUUID[categoryDTO.uuid] ?? {
+                let categoryUUID = UUID(uuidString: categoryDTO.uuid) ?? UUID()
+                let category = categoryByUUID[categoryUUID] ?? {
                     let new = SupplyCategory(name: categoryDTO.name, sortOrder: categoryDTO.sortOrder)
-                    new.uuid = categoryDTO.uuid
+                    new.uuid = categoryUUID
                     new.createdAt = categoryDTO.createdAt
                     new.modifiedAt = categoryDTO.modifiedAt ?? categoryDTO.createdAt
                     new.context = context
                     modelContext.insert(new)
-                    categoryByUUID[categoryDTO.uuid] = new
+                    categoryByUUID[categoryUUID] = new
                     summary.categoriesAdded += 1
                     return new
                 }()
 
                 for itemDTO in categoryDTO.items {
-                    let item = itemByUUID[itemDTO.uuid] ?? {
+                    let itemUUID = UUID(uuidString: itemDTO.uuid) ?? UUID()
+                    let item = itemByUUID[itemUUID] ?? {
                         let new = SupplyItem(name: itemDTO.name,
                                              storageLocation: itemDTO.storageLocation,
                                              notes: itemDTO.notes)
-                        new.uuid = itemDTO.uuid
+                        new.uuid = itemUUID
                         new.createdAt = itemDTO.createdAt
                         new.modifiedAt = itemDTO.modifiedAt ?? itemDTO.createdAt
                         // Prefer the v2 value+unit; fall back to the legacy months field.
@@ -116,21 +122,27 @@ enum DataImporter {
                         new.quantity = itemDTO.quantity
                         new.category = category
                         modelContext.insert(new)
-                        itemByUUID[itemDTO.uuid] = new
+                        itemByUUID[itemUUID] = new
                         summary.itemsAdded += 1
                         return new
                     }()
 
                     // Add only checks we don't already have — so a backup with
-                    // newer history fills in the gaps without duplicating.
-                    for checkDTO in itemDTO.checks where !checkUUIDs.contains(checkDTO.uuid) {
-                        let check = CheckRecord(date: checkDTO.date,
-                                                result: CheckResult(rawValue: checkDTO.result) ?? .ok,
+                    // newer history fills in the gaps without duplicating. Skip a
+                    // check with a malformed id or an unparseable date rather than
+                    // corrupting history.
+                    for checkDTO in itemDTO.checks {
+                        guard let checkUUID = UUID(uuidString: checkDTO.uuid),
+                              !checkUUIDs.contains(checkUUID),
+                              let checkDate = DataExporter.parseWireDate(checkDTO.date)
+                        else { continue }
+                        let check = CheckRecord(date: checkDate,
+                                                result: CheckResult(wireValue: checkDTO.result),
                                                 comment: checkDTO.comment)
-                        check.uuid = checkDTO.uuid
+                        check.uuid = checkUUID
                         check.item = item
                         modelContext.insert(check)
-                        checkUUIDs.insert(checkDTO.uuid)
+                        checkUUIDs.insert(checkUUID)
                         summary.checksAdded += 1
                     }
                 }
