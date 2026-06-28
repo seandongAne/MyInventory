@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA10000000000000000000AB /* MyInventoryWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA10000000000000000000A1 /* MyInventoryWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5CB0DA000000000000000003 /* Clibsodium in Frameworks */ = {isa = PBXBuildFile; productRef = 5CB0DA000000000000000002 /* Clibsodium */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +83,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5CB0DA000000000000000003 /* Clibsodium in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -167,6 +169,7 @@
 			);
 			name = MyInventory;
 			packageProductDependencies = (
+				5CB0DA000000000000000002 /* Clibsodium */,
 			);
 			productName = MyInventory;
 			productReference = 4B512D382FD6867B0054983D /* MyInventory.app */;
@@ -275,6 +278,9 @@
 			);
 			mainGroup = 4B512D2F2FD6867B0054983D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5CB0DA000000000000000001 /* XCRemoteSwiftPackageReference "swift-sodium" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4B512D392FD6867B0054983D /* Products */;
 			projectDirPath = "";
@@ -749,6 +755,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5CB0DA000000000000000001 /* XCRemoteSwiftPackageReference "swift-sodium" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/jedisct1/swift-sodium.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.11.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5CB0DA000000000000000002 /* Clibsodium */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5CB0DA000000000000000001 /* XCRemoteSwiftPackageReference "swift-sodium" */;
+			productName = Clibsodium;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4B512D302FD6867B0054983D /* Project object */;
 }
