@@ -39,17 +39,21 @@ jobs:
 
       - name: Run unit tests
         run: |
-          # GitHub runs this step with `bash -e`; keep every simulator-resolution
-          # command non-fatal (|| true) and use `if`, NOT `[ -z ] && …` — that exits 1
-          # when DEST_ID is already set and aborts the whole step under errexit (it did:
-          # an earlier run died here before xcodebuild even started). Parse
-          # `xcodebuild -showdestinations` (scheme-valid destinations only) so we never
-          # pin a device name the runner's Xcode renamed across chips (M4 → M5 → …).
-          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null || true)
-          DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
-          if [ -z "$DEST_ID" ]; then
-            DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
-          fi
+          # Resolve an iPad simulator from simctl JSON — NOT `xcodebuild -showdestinations`,
+          # which on a fresh CI checkout returned nothing (the scheme's SPM package isn't
+          # resolved yet) and left an empty -destination. simctl needs no project/scheme,
+          # so it's stable here. Pick the newest available iOS iPad, preferring 11".
+          # Keep it errexit-safe (GitHub runs the step under `bash -e`). jq is preinstalled.
+          pick() {
+            xcrun simctl list devices available --json | jq -r --arg pat "$1" '
+              [ .devices | to_entries[]
+                | select(.key|test("SimRuntime.iOS"))
+                | (.key|capture("iOS-(?<v>[0-9-]+)").v) as $v
+                | .value[] | select(.isAvailable and (.name|test($pat)))
+                | {udid, v:$v} ] | sort_by(.v) | last | .udid // empty'
+          }
+          DEST_ID=$(pick "iPad Pro 11" || true)
+          if [ -z "$DEST_ID" ]; then DEST_ID=$(pick "iPad" || true); fi
           echo "Using simulator: ${DEST_ID:-<none found>}"
           xcodebuild test \
             -project MyInventory.xcodeproj \
@@ -75,12 +79,17 @@ jobs:
       # test runner ("Application failed preflight checks"), so run serially.
       - name: Run UI tests (serial)
         run: |
-          # Resolve a scheme-valid iPad sim, errexit-safe (see the unit-tests step).
-          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null || true)
-          DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
-          if [ -z "$DEST_ID" ]; then
-            DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
-          fi
+          # Resolve an iPad simulator from simctl JSON, errexit-safe (see unit-tests).
+          pick() {
+            xcrun simctl list devices available --json | jq -r --arg pat "$1" '
+              [ .devices | to_entries[]
+                | select(.key|test("SimRuntime.iOS"))
+                | (.key|capture("iOS-(?<v>[0-9-]+)").v) as $v
+                | .value[] | select(.isAvailable and (.name|test($pat)))
+                | {udid, v:$v} ] | sort_by(.v) | last | .udid // empty'
+          }
+          DEST_ID=$(pick "iPad Pro 11" || true)
+          if [ -z "$DEST_ID" ]; then DEST_ID=$(pick "iPad" || true); fi
           echo "Using simulator: ${DEST_ID:-<none found>}"
           xcodebuild test \
             -project MyInventory.xcodeproj \
