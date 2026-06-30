@@ -293,3 +293,29 @@ Widget (`MyInventoryWidgets/`, separate appex target)
   contexts, context drill-down, adding a context. Run with
   `-parallel-testing-enabled NO` (see Commands). (Swipe-to-delete is intentionally not
   UI-tested — unreliable on a split-view sidebar; the delete logic is unit-tested.)
+
+## CI & PR review
+
+- **CI** (`.github/workflows/ci.yml`): on push / PR to `main` (doc-only `docs/**` changes
+  skip), a `macos-latest` runner (a standard runner → **free on this public repo**) runs
+  `xcodebuild test` against an iPad Pro 11" simulator whose id is resolved at runtime from
+  `xcodebuild -showdestinations` (scheme-valid destinations only — never a hardcoded device
+  name, which breaks when the runner's Xcode ships a different chip suffix). Separate
+  `unit-tests` + `ui-tests` jobs; UI runs serially (`-parallel-testing-enabled NO`).
+
+- **Merge discipline — clear codex's findings, then merge (NOT just CI)** (shared convention
+  with the `Brief-CC` repo). CI green is necessary but **not sufficient**: the async codex
+  review (`chatgpt-codex-connector[bot]`) never APPROVEs and is not a status check. Its
+  findings arrive **event-driven** — don't poll for a "verdict" or chase whether codex
+  re-reviewed the exact HEAD (a clean pass may signal as just a 👍).
+  1. **Resolve every codex P-badge thread**: fix + push, or reply why it's a false positive
+     — either way **resolve the thread** (a reply alone doesn't clear it; the resolve is the
+     single "handled" signal).
+  2. **Merge only when:** CI green · **0 unresolved codex threads** · a human authorized
+     merging. The one check command:
+     ```bash
+     gh api graphql -f query='{repository(owner:"seandongAne",name:"MyInventory"){pullRequest(number:N){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}' \
+       --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select((.comments.nodes[0].author.login|startswith("chatgpt-codex")) and (.isResolved==false))]|length'   # must be 0
+     ```
+- ⚠️ **Never write a literal `@`+`codex` mention** in a PR comment or committed doc — codex
+  parses it and replies with a config notice (pure noise).

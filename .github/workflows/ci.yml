@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Doc-only changes don't affect the build — skip CI.
+    paths-ignore:
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+
+# Cancel an in-flight run when a newer commit lands on the same ref —
+# saves the (capped at 5) macOS concurrency budget.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: macos-latest      # standard runner — free on public repos
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin the toolchain so the iOS 26.5 SDK is guaranteed present,
+      # instead of relying on whatever Xcode the runner defaults to.
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available | grep -i "iPad" || true
+
+      - name: Run unit tests
+        run: |
+          # Resolve an iPad simulator from simctl JSON — NOT `xcodebuild -showdestinations`,
+          # which on a fresh CI checkout returned nothing (the scheme's SPM package isn't
+          # resolved yet) and left an empty -destination. simctl needs no project/scheme.
+          # CONSTRAIN the pick to a runtime <= the iphonesimulator SDK that ships with the
+          # selected Xcode: GitHub runners sometimes carry EXTRA, newer iOS runtimes whose
+          # simulators xcodebuild can't drive — blindly taking the "newest" iPad landed on
+          # one of those and xcodebuild rejected it ("Unable to find a destination", only
+          # placeholders listed). A runtime <= SDK is eligible by construction (and SDK is
+          # >= our 26.5 deployment target). Pick the highest such iPad, preferring 11".
+          # Errexit-safe (GitHub runs the step under `bash -e`); jq is preinstalled.
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          echo "iphonesimulator SDK: $SDK"
+          pick() {
+            xcrun simctl list devices available --json | jq -r --arg pat "$1" --arg sdk "$SDK" '
+              ($sdk | split(".") | map(tonumber)) as $sv
+              | [ .devices | to_entries[]
+                  | select(.key | test("SimRuntime\\.iOS-[0-9]"))
+                  | (.key | capture("iOS-(?<v>[0-9-]+)").v) as $vs
+                  | ($vs | split("-") | map(tonumber)) as $ver
+                  | select($ver <= $sv)
+                  | .value[] | select(.isAvailable and (.name | test($pat)))
+                  | {udid, ver:$ver} ]
+              | sort_by(.ver) | last | .udid // empty'
+          }
+          DEST_ID=$(pick "iPad Pro 11" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad Air 11" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
+          echo "Using simulator: ${DEST_ID:-<none found>}"
+          xcodebuild test \
+            -project MyInventory.xcodeproj \
+            -scheme MyInventory \
+            -destination "platform=iOS Simulator,id=$DEST_ID" \
+            -derivedDataPath build/DD \
+            -only-testing:MyInventoryTests \
+            CODE_SIGNING_ALLOWED=NO
+
+  ui-tests:
+    name: UI tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # Parallel simulator clones intermittently fail to launch the unsigned
+      # test runner ("Application failed preflight checks"), so run serially.
+      - name: Run UI tests (serial)
+        run: |
+          # Resolve an iPad simulator under a runtime <= the iphonesimulator SDK,
+          # errexit-safe (see unit-tests for the full rationale).
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          echo "iphonesimulator SDK: $SDK"
+          pick() {
+            xcrun simctl list devices available --json | jq -r --arg pat "$1" --arg sdk "$SDK" '
+              ($sdk | split(".") | map(tonumber)) as $sv
+              | [ .devices | to_entries[]
+                  | select(.key | test("SimRuntime\\.iOS-[0-9]"))
+                  | (.key | capture("iOS-(?<v>[0-9-]+)").v) as $vs
+                  | ($vs | split("-") | map(tonumber)) as $ver
+                  | select($ver <= $sv)
+                  | .value[] | select(.isAvailable and (.name | test($pat)))
+                  | {udid, ver:$ver} ]
+              | sort_by(.ver) | last | .udid // empty'
+          }
+          DEST_ID=$(pick "iPad Pro 11" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad Air 11" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
+          echo "Using simulator: ${DEST_ID:-<none found>}"
+          xcodebuild test \
+            -project MyInventory.xcodeproj \
+            -scheme MyInventory \
+            -destination "platform=iOS Simulator,id=$DEST_ID" \
+            -derivedDataPath build/DD \
+            -only-testing:MyInventoryUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
