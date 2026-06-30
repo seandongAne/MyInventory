@@ -15,7 +15,11 @@ final class SettingsStore {
 
     private enum Key {
         static let globalLeadTimeDays = "globalLeadTimeDays"
+        /// Legacy months-only default (pre value+unit). Migrated once on first launch
+        /// into `defaultIntervalValue` + `defaultIntervalUnit`, then removed.
         static let defaultIntervalMonths = "defaultIntervalMonths"
+        static let defaultIntervalValue = "defaultIntervalValue"
+        static let defaultIntervalUnit = "defaultIntervalUnit"
         static let notificationsRequested = "notificationsRequested"
         static let notificationFireHour = "notificationFireHour"
         static let hasCompletedOnboarding = "hasCompletedOnboarding"
@@ -31,9 +35,16 @@ final class SettingsStore {
         didSet { defaults.set(notificationFireHour, forKey: Key.notificationFireHour) }
     }
 
-    /// Convenience default interval (months) pre-filled for new items. 0 == none.
-    var defaultIntervalMonths: Int {
-        didSet { defaults.set(defaultIntervalMonths, forKey: Key.defaultIntervalMonths) }
+    /// Convenience default interval value pre-filled for new items. 0 == no default
+    /// (mirrors `SupplyItem.intervalValue == nil`). Paired with `defaultIntervalUnit`.
+    var defaultIntervalValue: Int {
+        didSet { defaults.set(defaultIntervalValue, forKey: Key.defaultIntervalValue) }
+    }
+
+    /// Unit for `defaultIntervalValue` (raw `IntervalUnit`; retained even when the
+    /// value is 0, for round-trip stability). Defaults to months.
+    var defaultIntervalUnit: String {
+        didSet { defaults.set(defaultIntervalUnit, forKey: Key.defaultIntervalUnit) }
     }
 
     /// Whether we've already asked the system for notification permission once.
@@ -51,23 +62,43 @@ final class SettingsStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+
+        // One-time migration of the legacy months-only default into value+unit. The
+        // legacy key only exists on an upgrade and is removed here, so it and the
+        // value+unit keys never coexist — migrating unconditionally on its presence
+        // is safe (and avoids depending on a registration-domain fallback masking
+        // "never written" as 0).
+        if let legacyMonths = defaults.object(forKey: Key.defaultIntervalMonths) as? Int {
+            defaults.set(legacyMonths, forKey: Key.defaultIntervalValue)
+            defaults.set(IntervalUnit.months.rawValue, forKey: Key.defaultIntervalUnit)
+            defaults.removeObject(forKey: Key.defaultIntervalMonths)
+        }
+
         // Register sensible defaults the first time.
         defaults.register(defaults: [
             Key.globalLeadTimeDays: 7,
-            Key.defaultIntervalMonths: 0,
+            Key.defaultIntervalValue: 0,
+            Key.defaultIntervalUnit: IntervalUnit.months.rawValue,
             Key.notificationsRequested: false,
             Key.notificationFireHour: 9,
             Key.hasCompletedOnboarding: false
         ])
         self.globalLeadTimeDays = defaults.integer(forKey: Key.globalLeadTimeDays)
-        self.defaultIntervalMonths = defaults.integer(forKey: Key.defaultIntervalMonths)
+        self.defaultIntervalValue = defaults.integer(forKey: Key.defaultIntervalValue)
+        self.defaultIntervalUnit = defaults.string(forKey: Key.defaultIntervalUnit)
+            ?? IntervalUnit.months.rawValue
         self.notificationsRequested = defaults.bool(forKey: Key.notificationsRequested)
         self.notificationFireHour = defaults.integer(forKey: Key.notificationFireHour)
         self.hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding)
     }
 
-    /// nil when no convenience default is configured.
-    var defaultIntervalMonthsOrNil: Int? {
-        defaultIntervalMonths > 0 ? defaultIntervalMonths : nil
+    /// nil when no convenience default is configured (value 0 == "no default").
+    var defaultIntervalValueOrNil: Int? {
+        defaultIntervalValue > 0 ? defaultIntervalValue : nil
+    }
+
+    /// Strongly-typed default unit (falls back to months on any bad raw value).
+    var defaultIntervalUnitValue: IntervalUnit {
+        IntervalUnit(rawValue: defaultIntervalUnit) ?? .months
     }
 }

@@ -357,10 +357,10 @@ struct ItemEditView: View {
 
         switch mode {
         case .create:
-            if let def = settings.defaultIntervalMonthsOrNil {
+            if let def = settings.defaultIntervalValueOrNil {
                 hasInterval = true
                 intervalValue = def
-                intervalUnit = .months
+                intervalUnit = settings.defaultIntervalUnitValue
             }
             // Prime the custom-lead stepper from the global default (B4).
             leadDays = settings.globalLeadTimeDays
