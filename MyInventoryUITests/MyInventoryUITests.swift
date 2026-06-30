@@ -166,17 +166,21 @@ final class MyInventoryUITests: XCTestCase {
 
         // Backup prepared OK → the share button is shown (not stuck on
         // "Preparing backup…") and no export-failed alert appeared. On iPad the
-        // Settings sheet is a shorter page sheet whose List lazily renders rows, so
-        // export/restore (near the bottom) may start below the fold — scroll down
-        // until the lower of the two (Restore) is rendered; Export sits just above.
-        let export = app.buttons["Export All Data…"]
-        let restore = app.buttons["Restore from Backup…"]
+        // Settings sheet is a page sheet, and the plain-export section now sits below
+        // the (newer) Encrypted Backup section, so it starts below the fold and the
+        // Form lazily materialises its rows. Scroll until the bottom row (Restore) is
+        // actually ON SCREEN — gate on isHittable, NOT exists: an off-screen row still
+        // reports exists == true, which silently skipped the scroll and left the Export
+        // button (just above Restore) un-materialised. waitForExistence then covers the
+        // brief window before prepareBackup() flips "Preparing backup…" to the link.
+        let export = app.buttons["Export Unencrypted Copy…"]
+        let restore = app.buttons["Restore Unencrypted Copy…"]
         var scrolls = 0
-        while !restore.exists && scrolls < 8 {
+        while !restore.isHittable && scrolls < 12 {
             app.swipeUp()
             scrolls += 1
         }
-        XCTAssertTrue(export.waitForExistence(timeout: 6),
+        XCTAssertTrue(export.waitForExistence(timeout: 8),
                       "Backup should be prepared and the Export share button shown")
         XCTAssertFalse(app.alerts["Export failed"].exists)
 
