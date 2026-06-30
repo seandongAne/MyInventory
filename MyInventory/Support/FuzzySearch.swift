@@ -26,7 +26,7 @@ enum FuzzySearch {
             ]
             // Check comments are searchable too ("replaced the AA batteries" should
             // surface the item even when its name doesn't match).
-            fields.append(contentsOf: (item.checks ?? []).compactMap(\.comment))
+            fields.append(contentsOf: item.unwrappedChecks.compactMap(\.comment))
             let best = fields
                 .map { score(query: query, candidate: $0.lowercased()) }
                 .max() ?? 0

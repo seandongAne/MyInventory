@@ -235,10 +235,26 @@ Widget (`MyInventoryWidgets/`, separate appex target)
 - **CloudKit-safe models** — no `@Attribute(.unique)`; every stored property optional or
   defaulted; every relationship optional with an explicit inverse; no `.deny` delete
   rules. Stable IDs use a plain `uuid` property (not `.unique`).
-- **Delete rules**: context→categories `.cascade`, category→items **`.nullify`**,
-  item→checks `.cascade`. Because category→items is `.nullify`, **deleting a context must
-  delete its items explicitly first** (see `ContentView.deleteContext`) or they become
-  orphaned (reachable from no context). Always keep ≥1 context.
+- **Deletes are SOFT (Phase-2 tombstones), not hard** — user-facing deletion never calls
+  `modelContext.delete`; it stamps `deletedAt` (+ bumps `modifiedAt`) via the model
+  `markDeleted(now:)` helpers so the deletion propagates on cross-platform merge instead of
+  a peer re-adding the row. `markDeleted` cascades by walking RAW relationships:
+  context → categories → items → checks; item → checks; **category is self-only** (the
+  delete-category UX moves items to Uncategorized first). A tombstoned row is hidden
+  everywhere via the `deletedAt == nil` predicate on every `@Query`/`FetchDescriptor` AND
+  the `unwrappedCategories`/`unwrappedItems`/`unwrappedChecks`/`allItems`/`lastCheck`
+  accessors (which now filter) — but **export walks the RAW relationships so tombstones ship
+  in the backup**. Any new query/accessor/fetch over models MUST exclude tombstones; any new
+  mutation MUST `touch()` (bump `modifiedAt`) for LWW. Always keep ≥1 *live* context.
+  (Underlying SwiftData delete rules are unchanged — context→categories `.cascade`,
+  category→items `.nullify`, item→checks `.cascade` — but the soft-delete path never
+  triggers them.)
+- **Merge is last-write-wins + tombstones** (`DataImporter.merge`, Phase 2): uuid-keyed,
+  newer `modifiedAt` wins, newer `deletedAt` removes; checks are append-only union with a
+  monotonic tombstone. An OLDER backup never clobbers newer local data; a NEWER one can
+  update/remove. Wire format adds optional `deletedAt` to every entity (`docs/SCBK1_Format.md`
+  §5/§6). Android's importer is still Phase-1 additive until its matching update lands
+  (forward-compatible — it just skips `deletedAt`).
 - **Single source of truth for status visuals**: `SupplyStatus.style` — don't add a
   parallel color/symbol palette.
 - **Every `modelContext.save()` is paired with `rollback()` + a user-visible error** on

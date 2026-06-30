@@ -43,6 +43,11 @@ final class SupplyItem {
     // logic on each mutation is wired up in Phase 2.
     var modifiedAt: Date = Date.now
 
+    // Phase-2 soft-delete tombstone (nil = live). Hidden from all queries/UI via
+    // the `deletedAt == nil` predicates + `unwrappedChecks`/`unwrapped…` accessors,
+    // but retained + exported so the deletion propagates on merge.
+    var deletedAt: Date? = nil
+
     // Stable identifier used for notification request IDs (CloudKit forbids .unique).
     var uuid: UUID = UUID()
 
@@ -70,9 +75,10 @@ final class SupplyItem {
         self.uuid = UUID()
     }
 
-    /// Checks newest-first.
+    /// Live checks (tombstones excluded), newest-first. All status/UI go through
+    /// this — a soft-deleted check stops counting toward the next due date.
     var unwrappedChecks: [CheckRecord] {
-        (checks ?? []).sorted { $0.date > $1.date }
+        (checks ?? []).filter { $0.deletedAt == nil }.sorted { $0.date > $1.date }
     }
 
     var lastCheck: CheckRecord? { unwrappedChecks.first }
@@ -99,4 +105,15 @@ final class SupplyItem {
 
     /// The context this item lives in (reached through its category).
     var context: SupplyContext? { category?.context }
+
+    /// Bump the sync timestamp after a local edit so the change wins
+    /// last-write-wins on the next merge (Phase 2).
+    func touch(now: Date = .now) { modifiedAt = now }
+
+    /// Soft-delete this item and cascade to its checks (Phase-2 tombstone).
+    func markDeleted(now: Date = .now) {
+        for check in checks ?? [] { check.markDeleted(now: now) }
+        deletedAt = now
+        modifiedAt = now
+    }
 }

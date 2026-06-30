@@ -59,7 +59,8 @@ struct SupplyItemEntityQuery: EntityStringQuery {
     private func fetchItems() throws -> [SupplyItem] {
         guard case .success(let container) = AppModelContainer.shared else { return [] }
         return try container.mainContext.fetch(
-            FetchDescriptor<SupplyItem>(sortBy: [SortDescriptor(\.name)])
+            FetchDescriptor<SupplyItem>(predicate: #Predicate { $0.deletedAt == nil },
+                                        sortBy: [SortDescriptor(\.name)])
         )
     }
 }
@@ -78,7 +79,8 @@ struct MarkSupplyCheckedIntent: AppIntent {
         }
         let modelContext = container.mainContext
         let targetUUID = item.id
-        var descriptor = FetchDescriptor<SupplyItem>(predicate: #Predicate { $0.uuid == targetUUID })
+        var descriptor = FetchDescriptor<SupplyItem>(
+            predicate: #Predicate { $0.uuid == targetUUID && $0.deletedAt == nil })
         descriptor.fetchLimit = 1
         guard let supply = try modelContext.fetch(descriptor).first else {
             throw SupplyIntentError.itemNotFound

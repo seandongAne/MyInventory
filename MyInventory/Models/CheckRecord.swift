@@ -23,6 +23,11 @@ final class CheckRecord {
     // append-only, so this mainly future-proofs the schema alongside the others.
     var modifiedAt: Date = Date.now
 
+    // Phase-2 soft-delete tombstone (nil = live). A non-nil value hides the row
+    // from all queries/UI yet keeps it in the store + export so the deletion
+    // propagates across devices instead of being silently re-added on merge.
+    var deletedAt: Date? = nil
+
     var uuid: UUID = UUID()
 
     // Inverse of SupplyItem.checks.
@@ -43,6 +48,13 @@ final class CheckRecord {
     var hasComment: Bool {
         guard let comment else { return false }
         return !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Soft-delete this check (Phase-2 tombstone). Stamps `modifiedAt` so the
+    /// deletion wins last-write-wins on merge.
+    func markDeleted(now: Date = .now) {
+        deletedAt = now
+        modifiedAt = now
     }
 }
 

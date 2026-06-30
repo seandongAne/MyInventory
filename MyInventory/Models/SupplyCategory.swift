@@ -17,6 +17,9 @@ final class SupplyCategory {
     // Last-modified timestamp for cross-platform last-write-wins sync (Phase 2).
     var modifiedAt: Date = Date.now
 
+    // Phase-2 soft-delete tombstone (nil = live). See CheckRecord.deletedAt.
+    var deletedAt: Date? = nil
+
     var uuid: UUID = UUID()
 
     // Inverse of SupplyContext.categories.
@@ -35,7 +38,18 @@ final class SupplyCategory {
         self.uuid = UUID()
     }
 
-    var unwrappedItems: [SupplyItem] { items ?? [] }
+    var unwrappedItems: [SupplyItem] { (items ?? []).filter { $0.deletedAt == nil } }
+
+    /// Bump the sync timestamp after a local edit (LWW ordering, Phase 2).
+    func touch(now: Date = .now) { modifiedAt = now }
+
+    /// Soft-delete this category only (Phase-2 tombstone). Items are NOT cascaded:
+    /// the delete-category UX moves items to the Uncategorized bucket first, so a
+    /// tombstoned category is always already empty of live items.
+    func markDeleted(now: Date = .now) {
+        deletedAt = now
+        modifiedAt = now
+    }
 
     /// Name reserved for the orphaned-items fallback bucket.
     static let uncategorizedName = "Uncategorized"

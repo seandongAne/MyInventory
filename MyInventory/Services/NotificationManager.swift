@@ -155,7 +155,9 @@ final class NotificationManager {
         inFlight = Task { [weak self] in
             await previous?.value
             guard let self else { return }
-            guard let items = try? context.fetch(FetchDescriptor<SupplyItem>()) else { return }
+            guard let items = try? context.fetch(
+                FetchDescriptor<SupplyItem>(predicate: #Predicate { $0.deletedAt == nil })
+            ) else { return }
             // Widgets reflect the data regardless of notification permission.
             WidgetBridge.writeSnapshot(for: items, globalLeadTimeDays: globalLeadTimeDays)
             guard self.authorizationStatus == .authorized || self.authorizationStatus == .provisional else {
@@ -446,7 +448,8 @@ final class NotificationManager {
     private func markChecked(itemUUID: UUID) async {
         guard let container else { return }
         let modelContext = container.mainContext
-        var descriptor = FetchDescriptor<SupplyItem>(predicate: #Predicate { $0.uuid == itemUUID })
+        var descriptor = FetchDescriptor<SupplyItem>(
+            predicate: #Predicate { $0.uuid == itemUUID && $0.deletedAt == nil })
         descriptor.fetchLimit = 1
         guard let item = try? modelContext.fetch(descriptor).first else { return }
 

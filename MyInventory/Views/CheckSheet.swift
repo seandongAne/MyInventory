@@ -115,6 +115,7 @@ struct CheckSheet: View {
         modelContext.insert(record)
         if item.quantity != nil {
             item.quantity = quantity   // same save; rolled back together on failure
+            item.touch()               // quantity edit must win LWW on the next merge
         }
         do {
             try modelContext.save()

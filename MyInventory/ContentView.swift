@@ -27,8 +27,10 @@ struct ContentView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
-    @Query(sort: \SupplyContext.sortOrder) private var contexts: [SupplyContext]
-    @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
+    @Query(filter: #Predicate<SupplyContext> { $0.deletedAt == nil }, sort: \SupplyContext.sortOrder)
+    private var contexts: [SupplyContext]
+    @Query(filter: #Predicate<SupplyItem> { $0.deletedAt == nil }, sort: \SupplyItem.name)
+    private var allItems: [SupplyItem]
 
     @State private var sidebarSelection: SidebarSelection?
     @State private var path = NavigationPath()
@@ -421,6 +423,7 @@ struct ContentView: View {
             return
         }
         context.name = trimmed
+        context.touch()   // rename must win LWW on the next merge
         do {
             try modelContext.save()
         } catch {
@@ -433,20 +436,18 @@ struct ContentView: View {
     }
 
     private func deleteContext(_ context: SupplyContext) {
-        // Delete the context's items explicitly. The context→categories rule is
-        // .cascade, but categories→items is .nullify — so without this the items would
-        // be left orphaned (reachable from no context). item→checks is .cascade, so
-        // deleting each item also removes its check history.
-        let items = context.allItems
-        let uuids = items.map(\.uuid)
+        // Soft-delete (Phase-2 tombstone): stamp `deletedAt` on the context and its
+        // whole subtree (categories → items → checks) instead of hard-deleting, so
+        // the deletion propagates on merge rather than being re-added by a peer.
+        // `markDeleted` walks the raw children, so it catches everything reachable.
+        let uuids = context.allItems.map(\.uuid)
         let wasSelected: Bool = {
             if case .context(let selected) = sidebarSelection {
                 return selected.persistentModelID == context.persistentModelID
             }
             return false
         }()
-        for item in items { modelContext.delete(item) }
-        modelContext.delete(context)
+        context.markDeleted()
 
         do {
             try modelContext.save()

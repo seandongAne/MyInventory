@@ -25,8 +25,10 @@ struct ItemEditView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
-    @Query(sort: \SupplyContext.sortOrder) private var contexts: [SupplyContext]
-    @Query(sort: \SupplyCategory.sortOrder) private var allCategories: [SupplyCategory]
+    @Query(filter: #Predicate<SupplyContext> { $0.deletedAt == nil }, sort: \SupplyContext.sortOrder)
+    private var contexts: [SupplyContext]
+    @Query(filter: #Predicate<SupplyCategory> { $0.deletedAt == nil }, sort: \SupplyCategory.sortOrder)
+    private var allCategories: [SupplyCategory]
 
     // Editable fields
     @State private var name: String
@@ -446,6 +448,7 @@ struct ItemEditView: View {
             if item.photo != photoData {
                 item.photo = photoData
             }
+            item.touch()   // edits must win LWW on the next merge
             do {
                 try modelContext.save()
             } catch {

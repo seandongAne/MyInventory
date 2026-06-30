@@ -266,8 +266,8 @@ struct ItemDetailView: View {
     // MARK: Actions
 
     private func deleteItem() {
-        let uuid = item.uuid   // capture before the object is invalidated
-        modelContext.delete(item)
+        let uuid = item.uuid
+        item.markDeleted()   // soft-delete (Phase-2 tombstone) — item + its checks
         do {
             try modelContext.save()
         } catch {
@@ -282,7 +282,8 @@ struct ItemDetailView: View {
     }
 
     private func deleteCheck(_ check: CheckRecord) {
-        modelContext.delete(check)
+        check.markDeleted()   // soft-delete (Phase-2 tombstone)
+        item.touch()          // last-check derivation changed → bump for LWW
         do {
             try modelContext.save()
         } catch {
@@ -296,6 +297,7 @@ struct ItemDetailView: View {
 
     private func move(to category: SupplyCategory) {
         item.category = category
+        item.touch()   // reparent must win LWW on the next merge
         do {
             try modelContext.save()
         } catch {

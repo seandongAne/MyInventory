@@ -24,6 +24,9 @@ final class SupplyContext {
     // Last-modified timestamp for cross-platform last-write-wins sync (Phase 2).
     var modifiedAt: Date = Date.now
 
+    // Phase-2 soft-delete tombstone (nil = live). See CheckRecord.deletedAt.
+    var deletedAt: Date? = nil
+
     // Stable, non-DB-enforced identifier (CloudKit forbids .unique).
     var uuid: UUID = UUID()
 
@@ -38,13 +41,29 @@ final class SupplyContext {
         self.uuid = UUID()
     }
 
-    /// Categories sorted by their display order.
+    /// Live categories (tombstones excluded), sorted by display order.
     var unwrappedCategories: [SupplyCategory] {
-        (categories ?? []).sorted { $0.sortOrder < $1.sortOrder }
+        (categories ?? []).filter { $0.deletedAt == nil }.sorted { $0.sortOrder < $1.sortOrder }
     }
 
-    /// All items reachable through this context's categories.
+    /// All live items reachable through this context's categories.
     var allItems: [SupplyItem] {
         unwrappedCategories.flatMap { $0.unwrappedItems }
+    }
+
+    /// Bump the sync timestamp after a local edit (LWW ordering, Phase 2).
+    func touch(now: Date = .now) { modifiedAt = now }
+
+    /// Soft-delete this context and cascade tombstones to every category, item,
+    /// and check beneath it (Phase-2). Replaces the old hard-delete-items-first
+    /// dance — nothing is removed from the store, so the whole subtree's deletion
+    /// propagates on merge.
+    func markDeleted(now: Date = .now) {
+        for category in categories ?? [] {
+            for item in category.items ?? [] { item.markDeleted(now: now) }
+            category.markDeleted(now: now)
+        }
+        deletedAt = now
+        modifiedAt = now
     }
 }

@@ -16,7 +16,8 @@ struct CategoryManagerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
-    @Query(sort: \SupplyCategory.sortOrder) private var allCategories: [SupplyCategory]
+    @Query(filter: #Predicate<SupplyCategory> { $0.deletedAt == nil }, sort: \SupplyCategory.sortOrder)
+    private var allCategories: [SupplyCategory]
 
     @State private var showingAddAlert = false
     @State private var newName = ""
@@ -295,8 +296,8 @@ struct CategoryManagerView: View {
         if category.isUncategorized && !category.unwrappedItems.isEmpty { return }
 
         if category.unwrappedItems.isEmpty {
-            // Empty category — delete immediately without a sheet.
-            modelContext.delete(category)
+            // Empty category — soft-delete immediately without a sheet.
+            category.markDeleted()
             save()
         } else {
             // Non-empty — ask where to move the items first.
@@ -324,6 +325,7 @@ struct CategoryManagerView: View {
             return
         }
         category.name = trimmed
+        category.touch()
         save()
     }
 
@@ -333,8 +335,11 @@ struct CategoryManagerView: View {
         // drop items, which would then be orphaned by the .nullify delete rule.
         let items = category.unwrappedItems
         let destination = moveDestination ?? uncategorizedBucket()
-        for item in items { item.category = destination }
-        modelContext.delete(category)
+        for item in items {
+            item.category = destination
+            item.touch()   // a reparent must win LWW on the next merge
+        }
+        category.markDeleted()   // soft-delete the now-empty category
 
         do {
             try modelContext.save()

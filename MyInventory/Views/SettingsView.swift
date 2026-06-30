@@ -386,9 +386,17 @@ struct SettingsView: View {
         func phrase(_ count: Int, _ noun: String) -> String {
             "\(count) \(noun)\(count == 1 ? "" : "s")"
         }
-        return "Added \(phrase(summary.contextsAdded, "place")), "
+        var message = "Added \(phrase(summary.contextsAdded, "place")), "
             + "\(phrase(summary.itemsAdded, "item")), and "
             + "\(phrase(summary.checksAdded, "check"))."
+        // A newer backup can also update or remove existing rows (Phase-2 sync).
+        if summary.updated > 0 {
+            message += " Updated \(phrase(summary.updated, "record"))."
+        }
+        if summary.removed > 0 {
+            message += " Removed \(phrase(summary.removed, "record"))."
+        }
+        return message
     }
 }
 

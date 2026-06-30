@@ -30,6 +30,8 @@ enum DataExporter {
         let sortOrder: Int
         let createdAt: Date
         let modifiedAt: Date?
+        // Phase-2 soft-delete tombstone (omitted when nil = live). See SCBK1_Format §5.
+        let deletedAt: Date?
         let categories: [CategoryDTO]
     }
 
@@ -39,6 +41,7 @@ enum DataExporter {
         let sortOrder: Int
         let createdAt: Date
         let modifiedAt: Date?
+        let deletedAt: Date?
         let items: [ItemDTO]
     }
 
@@ -53,6 +56,7 @@ enum DataExporter {
         let notes: String?
         let createdAt: Date
         let modifiedAt: Date?
+        let deletedAt: Date?
         let checks: [CheckDTO]
 
         // Legacy schemaVersion-1 field (months only). Decode-only: the importer
@@ -65,6 +69,9 @@ enum DataExporter {
         let date: String   // calendar date "YYYY-MM-DD" (not an instant)
         let result: String // canonical lowercase: ok | replaced | needsAttention
         let comment: String?
+        // Phase-2 tombstone. Checks are append-only, so a delete is the only edit
+        // that propagates — monotonic (once set on either side, it stays).
+        let deletedAt: Date?
     }
 
     /// Encodes everything reachable from the store into pretty-printed JSON.
@@ -73,6 +80,9 @@ enum DataExporter {
         let contexts = try modelContext.fetch(
             FetchDescriptor<SupplyContext>(sortBy: [SortDescriptor(\.sortOrder)])
         )
+        // Export walks the RAW relationships (not the `unwrapped…` accessors, which
+        // now hide tombstones) so soft-deleted rows are carried in the backup and
+        // their deletion propagates on merge instead of being silently re-added.
         let export = Export(
             exportedAt: now,
             contexts: contexts.map { context in
@@ -82,14 +92,18 @@ enum DataExporter {
                     sortOrder: context.sortOrder,
                     createdAt: context.createdAt,
                     modifiedAt: context.modifiedAt,
-                    categories: context.unwrappedCategories.map { category in
+                    deletedAt: context.deletedAt,
+                    categories: (context.categories ?? [])
+                        .sorted { $0.sortOrder < $1.sortOrder }
+                        .map { category in
                         CategoryDTO(
                             uuid: category.uuid.uuidString.lowercased(),
                             name: category.name,
                             sortOrder: category.sortOrder,
                             createdAt: category.createdAt,
                             modifiedAt: category.modifiedAt,
-                            items: category.unwrappedItems
+                            deletedAt: category.deletedAt,
+                            items: (category.items ?? [])
                                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                                 .map { item in
                                     ItemDTO(
@@ -103,11 +117,15 @@ enum DataExporter {
                                         notes: item.notes,
                                         createdAt: item.createdAt,
                                         modifiedAt: item.modifiedAt,
-                                        checks: item.unwrappedChecks.map { check in
+                                        deletedAt: item.deletedAt,
+                                        checks: (item.checks ?? [])
+                                            .sorted { $0.date > $1.date }
+                                            .map { check in
                                             CheckDTO(uuid: check.uuid.uuidString.lowercased(),
                                                      date: Self.wireDate(check.date),
                                                      result: check.result.wireValue,
-                                                     comment: check.comment)
+                                                     comment: check.comment,
+                                                     deletedAt: check.deletedAt)
                                         },
                                         checkIntervalMonths: nil
                                     )

@@ -19,8 +19,10 @@ struct ContextListView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
-    @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
-    @Query(sort: \SupplyCategory.sortOrder) private var allCategories: [SupplyCategory]
+    @Query(filter: #Predicate<SupplyItem> { $0.deletedAt == nil }, sort: \SupplyItem.name)
+    private var allItems: [SupplyItem]
+    @Query(filter: #Predicate<SupplyCategory> { $0.deletedAt == nil }, sort: \SupplyCategory.sortOrder)
+    private var allCategories: [SupplyCategory]
 
     @State private var showingAddItem = false
     @State private var showingCategoryManager = false
@@ -337,9 +339,10 @@ struct ContextListView: View {
 
     private func deleteItem(_ item: SupplyItem) {
         let uuid = item.uuid
-        // The edit sheet may target the same item — clear it before the model dies.
+        // The edit sheet may target the same item — clear it so it doesn't show a
+        // now-tombstoned item.
         if editingItem?.persistentModelID == item.persistentModelID { editingItem = nil }
-        modelContext.delete(item)
+        item.markDeleted()   // soft-delete (Phase-2 tombstone) — item + its checks
         do {
             try modelContext.save()
         } catch {

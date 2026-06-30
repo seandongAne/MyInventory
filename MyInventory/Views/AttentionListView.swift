@@ -16,7 +16,8 @@ struct AttentionListView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
-    @Query(sort: \SupplyItem.name) private var allItems: [SupplyItem]
+    @Query(filter: #Predicate<SupplyItem> { $0.deletedAt == nil }, sort: \SupplyItem.name)
+    private var allItems: [SupplyItem]
 
     @State private var editingItem: SupplyItem?
     @State private var itemPendingDeletion: SupplyItem?
@@ -174,7 +175,7 @@ struct AttentionListView: View {
     private func deleteItem(_ item: SupplyItem) {
         let uuid = item.uuid
         if editingItem?.persistentModelID == item.persistentModelID { editingItem = nil }
-        modelContext.delete(item)
+        item.markDeleted()   // soft-delete (Phase-2 tombstone) — item + its checks
         do {
             try modelContext.save()
         } catch {

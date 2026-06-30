@@ -108,19 +108,35 @@ the *serialization*. These four rules are where the two apps previously diverged
 | `exportedAt`, `createdAt`, `modifiedAt` | **ISO-8601 UTC, second precision, `Z`, NO fractional seconds** (`"2026-06-10T00:00:00Z"`) | iOS `JSONDecoder.iso8601` rejects `.000` fractional; Android must strip ms |
 | check `date` | **calendar date `YYYY-MM-DD`** (`"2026-06-10"`), no time | a check is a day, not an instant |
 | check `result` | **`"ok"` \| `"replaced"` \| `"needsAttention"`** (lowercase) | iOS stores `"OK"`/`"Replaced"`/`"Needs attention"` internally and maps to/from these canonical wire values |
+| `deletedAt` (every entity incl. checks) | **absent or `null` = live**; an **ISO-8601 UTC instant** (same format as `modifiedAt`) = a **soft-delete tombstone** | Phase-2 (S3) sync. A tombstoned row stays in the payload + store so the deletion propagates; it is hidden from all UI/queries. A reader that predates Phase 2 simply ignores it (additive merge → never deletes) |
 
-Nullable fields are present with explicit `null`. Photos and local-only fields
-(notifications, per-device settings) are never in the payload.
+Nullable fields are `null` or omitted (a reader MUST treat an absent key as `null`;
+iOS omits nil optionals, Android emits explicit `null` — both decode identically).
+Photos and local-only fields (notifications, per-device settings) are never in the payload.
 
 Readers SHOULD also accept legacy same-app values for back-compat (iOS: a full-ISO check
 `date` and `"OK"`-cased result from pre-S2 `.json` exports).
 
-## 6. Merge on import — additive (Phase 1)
+## 6. Merge on import — last-write-wins + tombstones (Phase 2)
 
-Decrypt → parse → **additive uuid-keyed merge** (idempotent, non-destructive: only ADDS
-missing contexts/categories/items/checks; never overwrites or deletes). iOS
-`DataImporter` already does this; Android mirrors it. Edits/deletes propagate only in
-Phase 2 (S3: `modifiedAt` LWW + `deletedAt` tombstones).
+Decrypt → parse → **uuid-keyed merge**, idempotent (re-importing the same file is a no-op):
+
+- **New uuid** → insert (including a tombstone, so a peer's deletion lands rather than the
+  row reappearing).
+- **Existing uuid** → the side with the newer **`modifiedAt`** wins. A newer incoming edit
+  overwrites the local fields; a newer incoming **`deletedAt`** soft-deletes the local row;
+  an older or equal incoming version is ignored (local stays — equality keeps the no-op).
+- **Checks are append-only**: union by uuid, with a **monotonic tombstone** (once a check is
+  deleted on either side it stays deleted; checks carry no `modifiedAt` LWW).
+
+Every local mutation (edit, reparent, delete) MUST stamp `modifiedAt` for this ordering to
+work. An OLDER backup never clobbers newer local data; a NEWER backup can update or remove
+local rows — that is the point of sync.
+
+> Implementation status: **iOS `DataImporter` does LWW + tombstones (S3/A).** Android's
+> importer is still the Phase-1 additive merge (it ignores `deletedAt` and never overwrites)
+> until its matching update lands — forward-compatible because the extra `deletedAt` field is
+> simply skipped, so no flag day.
 
 ## 7. Conformance
 

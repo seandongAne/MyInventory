@@ -250,13 +250,52 @@ nonce → identical ciphertext, and each app must decrypt the other's output. Tu
   `ShareLink` (already used by `DataExporter`), Android share intent / Storage Access
   Framework. Save into Drive on one pad; open it on the other via the file picker. This
   already works cross-platform today, fully E2EE.
-- **Phase 2 (automatic)**: in-app Google Drive REST against the app's `appDataFolder`,
-  one blob `inventory.scbk`. Google Sign-In on both platforms. Sync cycle:
+- **Phase 2 (automatic)**: in-app Google Drive REST managing a single app-created file
+  `inventory.scbk` in the teacher's Drive (`drive.file` scope — see §8.1). Sync cycle:
   `download → decrypt → merge → encrypt → upload`, using Drive's ETag/version for
   optimistic concurrency (re-pull-and-merge on conflict). Google sees only ciphertext.
+  (The file is a normal, user-visible Drive file rather than a hidden `appDataFolder`
+  blob — a deliberate trade for the `drive.file` scope's zero-verification path below.)
 
-Operational prerequisite for Phase 2: a Google Cloud project with OAuth consent screen
-and per-platform client IDs (iOS + Android).
+### 8.1 Google account auth — system auth session, never an embedded webview
+
+The teacher signs in with their Google account to reach Drive. **The account password is
+never entered in our own UI**, and we must not try to: since 2016 Google **blocks OAuth
+from embedded webviews** (`WKWebView` / Android `WebView`) — such requests fail with the
+`disallowed_useragent` error. Rationale: training users to type Google credentials into an
+arbitrary app's text fields is exactly the phishing vector Google closes; embedded entry
+also breaks 2FA, passkeys, already-signed-in SSO, and password-manager autofill, which
+only work in a real browser context.
+
+The supported mechanism is a **system-managed in-app auth session** — a secure browser
+sheet hosted *over* the app, NOT a jump out to the external browser app:
+- **iOS**: `ASWebAuthenticationSession` (what the official `GoogleSignIn` SDK uses). A
+  sheet slides up; because it shares Safari's cookies the teacher is usually already
+  signed in → one tap "Continue as …" returns to the app.
+- **Android**: Chrome **Custom Tabs** via `GoogleSignIn` / AppAuth — the same in-app
+  overlay tab.
+
+We use the official **`GoogleSignIn` SDK on both platforms**; it wraps the auth session,
+the token exchange, and refresh-token storage. We request only the **`drive.file`** scope
+and receive a scoped OAuth access/refresh token — **never the password**. `drive.file` is
+**non-sensitive**, so the OAuth app can publish to **Production with no Google
+verification**, and refresh tokens don't expire on the 7-day "Testing"-status clock — the
+right fit for a single-user personal app. (It grants access only to files this app creates
+or the user opens with it — exactly our one `inventory.scbk`; the trade vs the hidden
+`drive.appdata` folder is that the file is visible in the teacher's Drive, which for an
+E2EE backup is acceptable, even convenient.)
+
+> Two distinct secrets — do not conflate (this is *why* in-app credential entry is wrong
+> for one but right for the other):
+> - **Google account auth** (to reach Drive) → OAuth via the system sheet above; we never
+>   see the password. In-app/embedded entry is rejected.
+> - **SCBK1 backup passphrase** (to decrypt the `.scbk`, §7) → this IS typed into our own
+>   app UI, by design: it is the E2EE key, never leaves the device, and Google never sees
+>   it. (Already implemented in S2.)
+
+Operational prerequisite for Phase 2: a Google Cloud project with OAuth consent screen and
+per-platform OAuth client IDs (iOS + Android), set up under the **teacher's own Google
+account** — the owner's task (§13 #6).
 
 ---
 
@@ -326,7 +365,13 @@ it's still just local migrations — before any crypto or network is involved.
 4. **iOS `notes`** — ✅ **add the editing UI now** (lands in S1).
 5. **Settings sync** — ✅ **synced** as a singleton (§4 / §9). Android gains stored +
    applied settings; an Android settings editing UI may follow later.
-6. **Storage / OAuth** — ✅ **Google Drive**, the teacher's own. The Phase-2 Google Cloud
-   OAuth project is the **owner's task** (needs the teacher's Google account); a
-   step-by-step will be provided at S3.
+6. **Storage / OAuth** — ✅ **Google Drive**, the teacher's own. Sign-in uses the official
+   **`GoogleSignIn` SDK** via the system auth session (`ASWebAuthenticationSession` on iOS
+   / Custom Tabs on Android); **embedded-webview / in-app password entry is rejected** —
+   Google blocks it (`disallowed_useragent`, policy since 2016) and it's a phishing
+   anti-pattern (§8.1). Scope = **`drive.file`** only (non-sensitive → Production with **no
+   verification** + non-expiring refresh tokens; the backup is one app-created, user-visible
+   Drive file, not a hidden `appDataFolder` blob); we never see the password. The Phase-2
+   Google Cloud OAuth project is the **owner's task** (needs the teacher's Google account);
+   a step-by-step will be provided at S3.
 ```
