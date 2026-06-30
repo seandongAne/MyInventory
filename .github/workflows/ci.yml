@@ -39,15 +39,18 @@ jobs:
 
       - name: Run unit tests
         run: |
-          set -o pipefail
-          # Pick a scheme-VALID iPad simulator (prefer 11", fall back to any iPad).
-          # Parse `xcodebuild -showdestinations`, not simctl: simctl also lists devices
-          # under runtimes the scheme can't target (deployment target iOS 26.5), which is
-          # what made an earlier run select an unusable UDID.
-          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null)
-          DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
-          [ -z "$DEST_ID" ] && DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
-          echo "Using simulator $DEST_ID"
+          # GitHub runs this step with `bash -e`; keep every simulator-resolution
+          # command non-fatal (|| true) and use `if`, NOT `[ -z ] && …` — that exits 1
+          # when DEST_ID is already set and aborts the whole step under errexit (it did:
+          # an earlier run died here before xcodebuild even started). Parse
+          # `xcodebuild -showdestinations` (scheme-valid destinations only) so we never
+          # pin a device name the runner's Xcode renamed across chips (M4 → M5 → …).
+          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null || true)
+          DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
+          if [ -z "$DEST_ID" ]; then
+            DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
+          fi
+          echo "Using simulator: ${DEST_ID:-<none found>}"
           xcodebuild test \
             -project MyInventory.xcodeproj \
             -scheme MyInventory \
@@ -72,11 +75,13 @@ jobs:
       # test runner ("Application failed preflight checks"), so run serially.
       - name: Run UI tests (serial)
         run: |
-          set -o pipefail
-          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null)
-          DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
-          [ -z "$DEST_ID" ] && DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
-          echo "Using simulator $DEST_ID"
+          # Resolve a scheme-valid iPad sim, errexit-safe (see the unit-tests step).
+          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null || true)
+          DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
+          if [ -z "$DEST_ID" ]; then
+            DEST_ID=$(printf '%s\n' "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2 || true)
+          fi
+          echo "Using simulator: ${DEST_ID:-<none found>}"
           xcodebuild test \
             -project MyInventory.xcodeproj \
             -scheme MyInventory \
