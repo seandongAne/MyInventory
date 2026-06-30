@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Doc-only changes don't affect the build — skip CI.
+    paths-ignore:
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+
+# Cancel an in-flight run when a newer commit lands on the same ref —
+# saves the (capped at 5) macOS concurrency budget.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: macos-latest      # standard runner — free on public repos
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin the toolchain so the iOS 26.5 SDK is guaranteed present,
+      # instead of relying on whatever Xcode the runner defaults to.
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available | grep -i "iPad" || true
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          # Pick a scheme-VALID iPad simulator (prefer 11", fall back to any iPad).
+          # Parse `xcodebuild -showdestinations`, not simctl: simctl also lists devices
+          # under runtimes the scheme can't target (deployment target iOS 26.5), which is
+          # what made an earlier run select an unusable UDID.
+          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null)
+          DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
+          [ -z "$DEST_ID" ] && DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
+          echo "Using simulator $DEST_ID"
+          xcodebuild test \
+            -project MyInventory.xcodeproj \
+            -scheme MyInventory \
+            -destination "platform=iOS Simulator,id=$DEST_ID" \
+            -derivedDataPath build/DD \
+            -only-testing:MyInventoryTests \
+            CODE_SIGNING_ALLOWED=NO
+
+  ui-tests:
+    name: UI tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # Parallel simulator clones intermittently fail to launch the unsigned
+      # test runner ("Application failed preflight checks"), so run serially.
+      - name: Run UI tests (serial)
+        run: |
+          set -o pipefail
+          DESTS=$(xcodebuild -showdestinations -project MyInventory.xcodeproj -scheme MyInventory 2>/dev/null)
+          DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad Pro 11-inch" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
+          [ -z "$DEST_ID" ] && DEST_ID=$(echo "$DESTS" | grep "platform:iOS Simulator" | grep "iPad" | grep -oE 'id:[0-9A-Fa-f-]{36}' | head -1 | cut -d: -f2)
+          echo "Using simulator $DEST_ID"
+          xcodebuild test \
+            -project MyInventory.xcodeproj \
+            -scheme MyInventory \
+            -destination "platform=iOS Simulator,id=$DEST_ID" \
+            -derivedDataPath build/DD \
+            -only-testing:MyInventoryUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
