@@ -41,19 +41,32 @@ jobs:
         run: |
           # Resolve an iPad simulator from simctl JSON — NOT `xcodebuild -showdestinations`,
           # which on a fresh CI checkout returned nothing (the scheme's SPM package isn't
-          # resolved yet) and left an empty -destination. simctl needs no project/scheme,
-          # so it's stable here. Pick the newest available iOS iPad, preferring 11".
-          # Keep it errexit-safe (GitHub runs the step under `bash -e`). jq is preinstalled.
+          # resolved yet) and left an empty -destination. simctl needs no project/scheme.
+          # CONSTRAIN the pick to a runtime <= the iphonesimulator SDK that ships with the
+          # selected Xcode: GitHub runners sometimes carry EXTRA, newer iOS runtimes whose
+          # simulators xcodebuild can't drive — blindly taking the "newest" iPad landed on
+          # one of those and xcodebuild rejected it ("Unable to find a destination", only
+          # placeholders listed). A runtime <= SDK is eligible by construction (and SDK is
+          # >= our 26.5 deployment target). Pick the highest such iPad, preferring 11".
+          # Errexit-safe (GitHub runs the step under `bash -e`); jq is preinstalled.
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          echo "iphonesimulator SDK: $SDK"
           pick() {
-            xcrun simctl list devices available --json | jq -r --arg pat "$1" '
-              [ .devices | to_entries[]
-                | select(.key|test("SimRuntime.iOS"))
-                | (.key|capture("iOS-(?<v>[0-9-]+)").v) as $v
-                | .value[] | select(.isAvailable and (.name|test($pat)))
-                | {udid, v:$v} ] | sort_by(.v) | last | .udid // empty'
+            xcrun simctl list devices available --json | jq -r --arg pat "$1" --arg sdk "$SDK" '
+              ($sdk | split(".") | map(tonumber)) as $sv
+              | [ .devices | to_entries[]
+                  | select(.key | test("SimRuntime\\.iOS-[0-9]"))
+                  | (.key | capture("iOS-(?<v>[0-9-]+)").v) as $vs
+                  | ($vs | split("-") | map(tonumber)) as $ver
+                  | select($ver <= $sv)
+                  | .value[] | select(.isAvailable and (.name | test($pat)))
+                  | {udid, ver:$ver} ]
+              | sort_by(.ver) | last | .udid // empty'
           }
           DEST_ID=$(pick "iPad Pro 11" || true)
-          if [ -z "$DEST_ID" ]; then DEST_ID=$(pick "iPad" || true); fi
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad Air 11" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
           echo "Using simulator: ${DEST_ID:-<none found>}"
           xcodebuild test \
             -project MyInventory.xcodeproj \
@@ -79,17 +92,26 @@ jobs:
       # test runner ("Application failed preflight checks"), so run serially.
       - name: Run UI tests (serial)
         run: |
-          # Resolve an iPad simulator from simctl JSON, errexit-safe (see unit-tests).
+          # Resolve an iPad simulator under a runtime <= the iphonesimulator SDK,
+          # errexit-safe (see unit-tests for the full rationale).
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          echo "iphonesimulator SDK: $SDK"
           pick() {
-            xcrun simctl list devices available --json | jq -r --arg pat "$1" '
-              [ .devices | to_entries[]
-                | select(.key|test("SimRuntime.iOS"))
-                | (.key|capture("iOS-(?<v>[0-9-]+)").v) as $v
-                | .value[] | select(.isAvailable and (.name|test($pat)))
-                | {udid, v:$v} ] | sort_by(.v) | last | .udid // empty'
+            xcrun simctl list devices available --json | jq -r --arg pat "$1" --arg sdk "$SDK" '
+              ($sdk | split(".") | map(tonumber)) as $sv
+              | [ .devices | to_entries[]
+                  | select(.key | test("SimRuntime\\.iOS-[0-9]"))
+                  | (.key | capture("iOS-(?<v>[0-9-]+)").v) as $vs
+                  | ($vs | split("-") | map(tonumber)) as $ver
+                  | select($ver <= $sv)
+                  | .value[] | select(.isAvailable and (.name | test($pat)))
+                  | {udid, ver:$ver} ]
+              | sort_by(.ver) | last | .udid // empty'
           }
           DEST_ID=$(pick "iPad Pro 11" || true)
-          if [ -z "$DEST_ID" ]; then DEST_ID=$(pick "iPad" || true); fi
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad Air 11" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
+          [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
           echo "Using simulator: ${DEST_ID:-<none found>}"
           xcodebuild test \
             -project MyInventory.xcodeproj \
