@@ -61,8 +61,12 @@ struct MyInventoryApp: App {
                     .modelContainer(container)
                     // Foreground trigger (design §7): re-opening the app pulls the other
                     // device's changes, throttled so quick app switches don't hammer sync.
+                    // Skipped in the pure unit-test host (mirrors ContentView) so the scene
+                    // drives no async work that could race the tests.
                     .onChange(of: scenePhase) { _, phase in
-                        guard phase == .active else { return }
+                        let unitTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+                            && !ProcessInfo.processInfo.arguments.contains("-uiTesting")
+                        guard phase == .active, !unitTestHost else { return }
                         Task { await syncEngine?.syncOnForegroundIfStale() }
                     }
             } else {
