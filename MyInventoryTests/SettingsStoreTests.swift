@@ -11,11 +11,11 @@ import XCTest
 
 final class SettingsStoreTests: XCTestCase {
 
-    /// A dictionary-backed UserDefaults so each test starts clean and never touches
-    /// the real `.standard` suite. Uses `InMemoryDefaults` rather than a real
-    /// `UserDefaults(suiteName:)` because creating/removing transient CFPreferences
-    /// suites intermittently crashed the CI test host with a malloc double-free.
-    private func freshDefaults(_ name: String = #function) -> UserDefaults {
+    /// A dictionary-backed store so each test starts clean and never touches the real
+    /// `.standard` suite. `InMemoryDefaults` is a plain `SettingsDefaults` (NOT a
+    /// `UserDefaults` subclass) because both a real transient suite and a `UserDefaults`
+    /// subclass intermittently crashed the CI test host with a malloc double-free.
+    private func freshDefaults(_ name: String = #function) -> SettingsDefaults {
         InMemoryDefaults()
     }
 

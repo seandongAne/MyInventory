@@ -18,6 +18,24 @@
 import Foundation
 import Observation
 
+/// The tiny slice of `UserDefaults` that `SettingsStore` actually persists through —
+/// the whole reason it exists is so tests can inject a plain in-memory double WITHOUT
+/// subclassing `UserDefaults`. `UserDefaults` is a class cluster whose designated
+/// initializer (`init(suiteName:)`) hands back a shared standard-domain object;
+/// subclassing it and letting several instances deinit was over-releasing that shared
+/// object, crashing the CI test host with a `malloc` double-free. Depending on this
+/// protocol instead keeps the production path byte-identical (`UserDefaults` conforms
+/// for free) while giving tests a struct-simple, cluster-free store.
+protocol SettingsDefaults: AnyObject {
+    func object(forKey defaultName: String) -> Any?
+    func set(_ value: Any?, forKey defaultName: String)
+    func removeObject(forKey defaultName: String)
+    func string(forKey defaultName: String) -> String?
+    func bool(forKey defaultName: String) -> Bool
+}
+
+extension UserDefaults: SettingsDefaults {}
+
 @Observable
 final class SettingsStore {
 
@@ -88,7 +106,7 @@ final class SettingsStore {
         didSet { defaults.set(hasCompletedOnboarding, forKey: Key.hasCompletedOnboarding) }
     }
 
-    private let defaults: UserDefaults
+    private let defaults: SettingsDefaults
     /// False during init so loading persisted values doesn't spuriously bump the
     /// modified timestamp; flipped true once construction finishes.
     private var isReady = false
@@ -105,7 +123,7 @@ final class SettingsStore {
         Key.defaultIntervalUnit
     ]
 
-    init(defaults: UserDefaults = .standard, now: Date = .now) {
+    init(defaults: SettingsDefaults = UserDefaults.standard, now: Date = .now) {
         self.defaults = defaults
 
         // Decide the synced-settings LWW baseline from the PERSISTED domain only. This

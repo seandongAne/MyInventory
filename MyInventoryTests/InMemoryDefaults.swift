@@ -2,47 +2,38 @@
 //  InMemoryDefaults.swift
 //  MyInventoryTests
 //
-//  A dictionary-backed `UserDefaults` for tests.
+//  A dictionary-backed `SettingsDefaults` for tests.
 //
-//  Why this exists: the settings tests used to create a real CFPreferences suite
-//  per test (`UserDefaults(suiteName:)!` + `removePersistentDomain(forName:)`).
-//  On the CI simulator that pattern intermittently crashed the whole test host
-//  with a malloc double-free ("pointer being freed was not allocated") — the
-//  transient suite create/remove races with the simulator's `cfprefsd`. It was
-//  flaky (some runs green, some red) and turned the unit-test job red at random.
-//
-//  This subclass overrides every primitive `SettingsStore` touches with an
-//  in-memory store, so no suite is ever created and `cfprefsd` is never involved
-//  — deterministic, isolated, and fast. `super.init(suiteName: nil)` satisfies the
-//  designated initializer; the underlying standard domain is never read or written
-//  because every accessor below goes through `storage`.
+//  Why this exists — and why it is NOT a `UserDefaults` subclass:
+//  the settings tests need an isolated, per-test key/value store. Two earlier
+//  approaches both intermittently crashed the CI test host with a `malloc`
+//  double-free ("pointer being freed was not allocated"):
+//    1. a real transient suite (`UserDefaults(suiteName:)!` + `removePersistentDomain`)
+//       raced the simulator's `cfprefsd`;
+//    2. subclassing `UserDefaults` and calling `super.init(suiteName: nil)!` — a class
+//       cluster whose initializer returns the SHARED standard-domain object, so several
+//       `InMemoryDefaults` instances all wrapped the same singleton and their deinits
+//       over-released it (the constant crash address across process launches was that
+//       shared object, living in the dyld shared-cache region).
+//  `SettingsStore` now depends on the narrow `SettingsDefaults` protocol, so this can be
+//  a plain Swift class over a `[String: Any]` dictionary — no class cluster, no
+//  `cfprefsd`, no shared singleton. Deterministic, isolated, and can't corrupt the heap.
 //
 
 import Foundation
+@testable import MyInventory
 
-final class InMemoryDefaults: UserDefaults {
+final class InMemoryDefaults: SettingsDefaults {
     private var storage: [String: Any] = [:]
 
-    init() { super.init(suiteName: nil)! }
+    func object(forKey defaultName: String) -> Any? { storage[defaultName] }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("InMemoryDefaults is test-only") }
-
-    override func object(forKey defaultName: String) -> Any? { storage[defaultName] }
-
-    override func set(_ value: Any?, forKey defaultName: String) {
+    func set(_ value: Any?, forKey defaultName: String) {
         if let value { storage[defaultName] = value } else { storage.removeValue(forKey: defaultName) }
     }
 
-    override func set(_ value: Int, forKey defaultName: String) { storage[defaultName] = value }
-    override func set(_ value: Bool, forKey defaultName: String) { storage[defaultName] = value }
-    override func set(_ value: Double, forKey defaultName: String) { storage[defaultName] = value }
-    override func set(_ value: Float, forKey defaultName: String) { storage[defaultName] = value }
+    func removeObject(forKey defaultName: String) { storage.removeValue(forKey: defaultName) }
 
-    override func removeObject(forKey defaultName: String) { storage.removeValue(forKey: defaultName) }
-
-    override func string(forKey defaultName: String) -> String? { storage[defaultName] as? String }
-    override func bool(forKey defaultName: String) -> Bool { storage[defaultName] as? Bool ?? false }
-    override func integer(forKey defaultName: String) -> Int { storage[defaultName] as? Int ?? 0 }
-    override func double(forKey defaultName: String) -> Double { storage[defaultName] as? Double ?? 0 }
+    func string(forKey defaultName: String) -> String? { storage[defaultName] as? String }
+    func bool(forKey defaultName: String) -> Bool { storage[defaultName] as? Bool ?? false }
 }
