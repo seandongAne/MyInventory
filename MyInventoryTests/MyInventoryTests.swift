@@ -380,6 +380,43 @@ final class MyInventoryTests: XCTestCase {
             for: items, globalLeadTimeDays: 7, now: now)?.total, 1)
     }
 
+    /// A merge can leave a live item under a tombstoned parent; it must arm NO
+    /// reminders (the planner drives the widget snapshot too), matching the hidden
+    /// in-app list.
+    func testPlannerExcludesItemsUnderTombstonedParent() {
+        let now = Date.now
+        let ctx = SupplyContext(name: "Ctx"); context.insert(ctx)
+        let cat = SupplyCategory(name: "Cat"); cat.context = ctx; context.insert(cat)
+        let item = makeItem(name: "Water", intervalMonths: 12, dueOffsetDays: 30, now: now)
+        item.category = cat
+        try? context.save()
+
+        XCTAssertFalse(NotificationManager.plannedNotifications(     // live parent → planned
+            for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60).isEmpty)
+
+        cat.deletedAt = now                                         // orphan → no reminders
+        XCTAssertTrue(NotificationManager.plannedNotifications(
+            for: [item], now: now, globalLeadTimeDays: 7, maxPending: 60).isEmpty)
+    }
+
+    /// Same orphan must not enter the attention digest or the app-icon badge, so they
+    /// match the in-app Needs Attention count.
+    func testDigestExcludesItemsUnderTombstonedParent() {
+        let now = Date.now
+        let ctx = SupplyContext(name: "Ctx"); context.insert(ctx)
+        let cat = SupplyCategory(name: "Cat"); cat.context = ctx; context.insert(cat)
+        let item = makeItem(name: "Water", intervalMonths: 6)      // never-checked → attention
+        item.category = cat
+        try? context.save()
+
+        XCTAssertEqual(NotificationManager.attentionSummary(        // live parent → counted
+            for: [item], globalLeadTimeDays: 7, now: now)?.neverChecked, 1)
+
+        ctx.deletedAt = now                                        // tombstone context → excluded
+        XCTAssertNil(NotificationManager.attentionSummary(
+            for: [item], globalLeadTimeDays: 7, now: now))
+    }
+
     // MARK: - Fire-date clamping (extracted from add() so it's testable)
 
     func testResolvedFireDateBeforeFireHourFiresSameDay() {
