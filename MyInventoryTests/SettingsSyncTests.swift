@@ -26,10 +26,10 @@ final class SettingsSyncTests: XCTestCase {
     }
 
     private func freshSettings(_ name: String = #function) -> SettingsStore {
-        let suite = "SettingsSyncTests.\(name)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return SettingsStore(defaults: defaults)
+        // In-memory defaults, not a real CFPreferences suite: creating/removing
+        // transient suites intermittently crashed the CI test host (see
+        // `InMemoryDefaults`).
+        SettingsStore(defaults: InMemoryDefaults())
     }
 
     private let t1 = Date(timeIntervalSince1970: 1_700_000_000)

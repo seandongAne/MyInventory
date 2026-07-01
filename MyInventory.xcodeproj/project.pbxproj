@@ -50,6 +50,13 @@
 			);
 			target = AA10000000000000000000A3 /* MyInventoryWidgets */;
 		};
+		AA10000000000000000000AF /* Exceptions for "MyInventory" folder in "MyInventory" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 4B512D372FD6867B0054983D /* MyInventory */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -63,6 +70,9 @@
 		};
 		4B512D3A2FD6867B0054983D /* MyInventory */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA10000000000000000000AF /* Exceptions for "MyInventory" folder in "MyInventory" target */,
+			);
 			path = MyInventory;
 			sourceTree = "<group>";
 		};
@@ -507,6 +517,7 @@
 				DEVELOPMENT_TEAM = 974NJFKQLF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MyInventory/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 					INFOPLIST_KEY_NSCameraUsageDescription = "Used to photograph your supplies for easy identification.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -544,6 +555,7 @@
 				DEVELOPMENT_TEAM = 974NJFKQLF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MyInventory/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 					INFOPLIST_KEY_NSCameraUsageDescription = "Used to photograph your supplies for easy identification.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
