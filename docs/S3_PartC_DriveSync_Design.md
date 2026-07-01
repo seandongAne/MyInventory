@@ -102,13 +102,31 @@ One `syncOnce()` pass, driven by the engine, reusing the done crypto + merge:
       remoteJson = decrypt(remoteCipher, syncKey)     // reuse S2 crypto
       merge(remoteJson → local store)                 // reuse Part A/B LWW+tombstone+settings
       merged     = export(local store)                // reuse assembleExport
-4. localChanged = (merged != lastPushedSnapshot) || remoteCipher == null
+4. digest = contentDigest(merged)                     // STABLE — excludes exportedAt (§4.1)
+   localChanged = (digest != lastPushedDigest) || remoteCipher == null
    if !localChanged: DONE (already converged — pull-only, no upload)
 5. cipher = encrypt(merged, syncKey)                  // reuse S2 crypto
 6. push(fileId, cipher, expectedVersion = remoteVersion)
       on Conflict → goto 2 (bounded retries, e.g. 5)
-7. record lastPushedSnapshot + lastSyncedAt; DONE
+7. record lastPushedDigest + lastSyncedAt; DONE
 ```
+
+### 4.1 Change detection must ignore volatile metadata
+
+`DataExporter.makeExport` stamps every export with `exportedAt: now` (Android's `assembleExport`
+likewise), so a **byte-for-byte** compare of `merged` against the last snapshot would *always*
+differ — every manual/foreground sync would re-encrypt and re-upload a new ciphertext even with
+zero inventory edits, breaking the idempotence guarantee above and any conflict test built on it.
+So step 4 compares a **stable content digest**, not the raw serialized export:
+
+- `contentDigest(export)` = a hash (e.g. SHA-256) over the export **with `exportedAt` normalized
+  out** (drop the field, or zero it, before hashing). Everything else — entities, `modifiedAt`,
+  `deletedAt`, checks, the settings singleton — stays in, so any *real* change flips the digest.
+- We never diff **ciphertext**: SCBK1 uses a fresh random nonce per encryption, so two encryptions
+  of identical plaintext differ anyway. Change detection is always on the *plaintext* digest.
+- `lastPushedDigest` is persisted per-device (alongside `lastSyncedAt`); on a cold start with an
+  unknown digest we simply treat local as possibly-changed and let the `expectedVersion` guard +
+  LWW merge keep the upload safe and idempotent.
 
 Properties this gives us **for free** from the already-shipped pieces:
 - **Idempotent** — re-running with no changes on either side uploads nothing (step 4 short-circuit)
