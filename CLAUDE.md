@@ -301,7 +301,9 @@ Widget (`MyInventoryWidgets/`, separate appex target)
   `xcodebuild test` against an iPad Pro 11" simulator whose id is resolved at runtime from
   `xcodebuild -showdestinations` (scheme-valid destinations only — never a hardcoded device
   name, which breaks when the runner's Xcode ships a different chip suffix). Separate
-  `unit-tests` + `ui-tests` jobs; UI runs serially (`-parallel-testing-enabled NO`).
+  `unit-tests` + `ui-tests` jobs; **both run serially** (`-parallel-testing-enabled NO`) —
+  parallel simulator clones intermittently fail to launch the unsigned test runner
+  ("crashed while preparing to run tests").
 
 - **Merge discipline — clear codex's findings, then merge (NOT just CI)** (shared convention
   with the `Brief-CC` repo). CI green is necessary but **not sufficient**: the async codex
@@ -311,8 +313,10 @@ Widget (`MyInventoryWidgets/`, separate appex target)
   1. **Resolve every codex P-badge thread**: fix + push, or reply why it's a false positive
      — either way **resolve the thread** (a reply alone doesn't clear it; the resolve is the
      single "handled" signal).
-  2. **Merge only when:** CI green · **0 unresolved codex threads** · a human authorized
-     merging. The one check command:
+  2. **Merge when:** CI green · **0 unresolved codex threads** — then merge directly (squash,
+     delete the branch). **No separate human sign-off is required**: once CI is green and every
+     codex thread is resolved, merging is autonomous (don't wait to be told to merge). The one
+     check command:
      ```bash
      gh api graphql -f query='{repository(owner:"seandongAne",name:"MyInventory"){pullRequest(number:N){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}' \
        --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select((.comments.nodes[0].author.login|startswith("chatgpt-codex")) and (.isResolved==false))]|length'   # must be 0
