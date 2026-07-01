@@ -171,6 +171,10 @@ struct ContentView: View {
             if let seedError { Text(seedError) }
         }
         .task {
+            // Unit tests host the full app but drive their own in-memory stores; running
+            // the scene's seeding + notification scheduling on the real store races them
+            // and has flakily corrupted the test host's heap. Skip it there.
+            guard !skipsSceneLaunchWork else { return }
             seedContexts()
             if isUITesting {
                 seedUITestSample()
@@ -198,7 +202,7 @@ struct ContentView: View {
             handleDeepLink(link)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
+            if phase == .active, !skipsSceneLaunchWork {
                 Task { await refreshNotifications() }
             }
         }
@@ -338,6 +342,18 @@ struct ContentView: View {
 
     private var isUITesting: Bool {
         ProcessInfo.processInfo.arguments.contains("-uiTesting")
+    }
+
+    /// Skip the scene's launch side effects (seeding + notification rescheduling on the
+    /// REAL store) in the PURE unit-test host. `XCTestConfigurationFilePath` is set when the
+    /// app hosts XCTest but NOT in a UI-tested app launch or a normal run; the extra
+    /// `!isUITesting` is a belt-and-suspenders guarantee that UI tests (which DO need
+    /// seeding, and always pass `-uiTesting`) are never skipped. That async launch activity
+    /// races the unit tests and has intermittently corrupted the test host's heap ("pointer
+    /// being freed was not allocated"); unit tests drive their own in-memory containers and
+    /// never need the app scene, so skipping it there is safe.
+    private var skipsSceneLaunchWork: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil && !isUITesting
     }
 
     private func seedUITestSample() {

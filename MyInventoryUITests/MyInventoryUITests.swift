@@ -255,4 +255,38 @@ final class MyInventoryUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["First Aid Kit"].exists,
                        "Tapping Check must check in place, not open the detail")
     }
+
+    /// S3 Part C-0: the Settings "Cloud Sync" section is wired to a live `SyncEngine`
+    /// (backed by the in-memory fake under `-syncDemo`). Driving sign-in → Sync Now to a
+    /// "Synced" status proves the SyncState→UI mapping + triggers work end-to-end — the
+    /// section's mere appearance also confirms the engine resolved from the environment.
+    @MainActor
+    func testSyncDemoSignInThenSyncNowReachesSynced() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting", "-syncDemo"]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Vehicle"].waitForExistence(timeout: 10))
+        app.buttons["Settings"].tap()
+
+        // The Cloud Sync section sits low in the Form; scroll until its sign-in button
+        // is actually on screen (isHittable, not just exists — see the export test).
+        let signIn = app.buttons["Sign in to Google Drive"]
+        var scrolls = 0
+        while !signIn.isHittable && scrolls < 12 {
+            app.swipeUp()
+            scrolls += 1
+        }
+        XCTAssertTrue(signIn.waitForExistence(timeout: 8), "the Cloud Sync section should render its sign-in row")
+        signIn.tap()
+
+        // Signed in → Sync Now appears; tapping it runs one (fake) sync cycle.
+        let syncNow = app.buttons["Sync Now"]
+        XCTAssertTrue(syncNow.waitForExistence(timeout: 5))
+        syncNow.tap()
+
+        // A successful sync surfaces a "Synced …" status row.
+        let synced = app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Synced'")).firstMatch
+        XCTAssertTrue(synced.waitForExistence(timeout: 5), "Sync Now should reach the Synced state")
+    }
 }
