@@ -122,6 +122,13 @@ final class SyncEngine {
     @discardableResult
     func syncOnce() async -> SyncState {
         guard state != .signedOut else { return state }
+        // Re-entrancy guard: the trigger policy (manual + foreground + debounced-dirty)
+        // can fire overlapping syncs, and `syncOnce` suspends at every transport await.
+        // Coalesce — a sync already in flight will pick up any just-made edits on its
+        // next pass — so we never run two cycles against one store concurrently (which
+        // would double-push and race `lastPushedDigest`). Checked synchronously before
+        // the first await, so it is a reliable gate on the MainActor's serial executor.
+        guard state != .syncing else { return state }
         state = .syncing
         do {
             let resolved = try await transport.resolveFile()

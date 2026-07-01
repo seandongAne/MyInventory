@@ -217,6 +217,28 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(transport.resolveCount, 0)
     }
 
+    // MARK: Re-entrancy
+
+    func testConcurrentSyncsCoalesceToOneUpload() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let fake = FakeSyncTransport()
+        let gated = GatedTransport(fake)   // parks the first cycle mid-flight
+        let sut = engine(gated, ctx)
+
+        // Fire the first sync and wait until it is genuinely parked inside the transport
+        // (state == .syncing), then fire a second trigger: it must coalesce, not run.
+        async let first = sut.syncOnce()
+        await gated.awaitParked()
+        let second = await sut.syncOnce()
+        XCTAssertEqual(second, .syncing, "an overlapping trigger returns the in-flight state, no new cycle")
+
+        await gated.release()
+        let firstResult = await first
+        XCTAssertEqual(firstResult, .synced(fixedNow))
+        XCTAssertEqual(fake.pushCount, 1, "one cycle, one upload — the guard blocked the second")
+    }
+
     // MARK: Content digest
 
     func testContentDigestIgnoresExportedAtButTracksContent() async throws {
@@ -277,4 +299,42 @@ private struct ThrowingDecryptCipher: SyncCipher {
     struct Boom: Error {}
     func encrypt(_ plaintext: Data) throws -> Data { plaintext }
     func decrypt(_ ciphertext: Data) throws -> Data { throw Boom() }
+}
+
+/// Wraps a `FakeSyncTransport` and PARKS the first `resolveFile` at a gate until
+/// `release()` — lets a test hold one sync genuinely in-flight (the in-memory fake
+/// otherwise never suspends) and fire a second concurrent trigger to prove the
+/// engine's re-entrancy guard. `awaitParked()` is order-independent (returns
+/// immediately if the gate was already reached).
+private actor GatedTransport: SyncTransport {
+    private let inner: FakeSyncTransport
+    private var gate: CheckedContinuation<Void, Never>?
+    private var reached: CheckedContinuation<Void, Never>?
+    private var didReach = false
+
+    init(_ inner: FakeSyncTransport) { self.inner = inner }
+
+    func awaitParked() async {
+        if didReach { return }
+        await withCheckedContinuation { reached = $0 }
+    }
+
+    func release() { gate?.resume(); gate = nil }
+
+    func resolveFile() async throws -> ResolvedRemoteFile {
+        if !didReach {
+            didReach = true
+            reached?.resume(); reached = nil
+            await withCheckedContinuation { gate = $0 }
+        }
+        return try await inner.resolveFile()
+    }
+
+    func pull(fileId: String) async throws -> PulledBlob {
+        try await inner.pull(fileId: fileId)
+    }
+
+    func push(fileId: String, bytes: Data, expectedVersion: SyncVersion?) async throws -> PushOutcome {
+        try await inner.push(fileId: fileId, bytes: bytes, expectedVersion: expectedVersion)
+    }
 }
