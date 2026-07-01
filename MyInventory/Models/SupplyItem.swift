@@ -106,9 +106,31 @@ final class SupplyItem {
     /// The context this item lives in (reached through its category).
     var context: SupplyContext? { category?.context }
 
+    /// True when a category or context ANCESTOR is tombstoned while this item is not.
+    /// A cross-platform merge can leave such an orphan — one peer soft-deleted the
+    /// parent while another added/edited the item, and the strict per-uuid LWW merge
+    /// keeps the live child under the dead parent. It must never surface in any
+    /// cross-context surface (attention dashboard, app-wide search, badge counts);
+    /// per-context views are already unreachable because their parent is filtered out.
+    var hasTombstonedAncestor: Bool {
+        if let category, category.deletedAt != nil { return true }
+        if let context = category?.context, context.deletedAt != nil { return true }
+        return false
+    }
+
     /// Bump the sync timestamp after a local edit so the change wins
     /// last-write-wins on the next merge (Phase 2).
     func touch(now: Date = .now) { modifiedAt = now }
+
+    /// Reparent to a new category, bumping `modifiedAt` so the move wins LWW on the
+    /// next cross-device merge. A bare `category =` assignment silently loses the
+    /// merge race (the incoming move only applies when its `modifiedAt` is strictly
+    /// newer) — every move MUST go through here. The sibling delete-category flow
+    /// (`CategoryManagerView.confirmDelete`) touches each moved item for the same reason.
+    func move(to newCategory: SupplyCategory, now: Date = .now) {
+        category = newCategory
+        touch(now: now)
+    }
 
     /// Soft-delete this item and cascade to its checks (Phase-2 tombstone).
     func markDeleted(now: Date = .now) {

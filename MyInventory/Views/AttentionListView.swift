@@ -30,6 +30,7 @@ struct AttentionListView: View {
     private var rows: [SupplyItem] {
         let lead = settings.globalLeadTimeDays
         return allItems
+            .filter { !$0.hasTombstonedAncestor }   // hide merge-orphans under a dead parent
             .filter { $0.status(leadTimeDays: lead).isAttention }
             .sorted { a, b in
                 let pa = a.status(leadTimeDays: lead).sortPriority

@@ -81,12 +81,12 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
 
-      # TEMPORARY diagnostic: the unit-test host has been crashing on the CI toolchain
-      # (Xcode 26.3) with a `malloc` double-free at a constant address that does NOT
-      # reproduce locally (Xcode 26.6). xcodebuild's log shows only the malloc line, not
-      # the backtrace — so on failure, surface the simulator crash report (`.ips`), which
-      # carries the symbolicated stack (which binary: MyInventory / libsodium / libswift /
-      # libmalloc). Remove once the root cause is fixed.
+      # Crash-report safety net. This originally caught the flaky `malloc` double-free
+      # that only reproduced on the CI toolchain (Xcode 26.3, not local 26.6): its `.ips`
+      # backtrace pinned the cause to an Apple isolated-deinit runtime bug, fixed by the
+      # `nonisolated deinit` in SettingsStore/FakeSyncTransport. Kept as a permanent
+      # diagnostic — xcodebuild's log shows only the malloc line, so on ANY future native
+      # crash this surfaces the symbolicated simulator crash report (which binary faulted).
       - name: Dump crash reports on failure
         if: ${{ failure() }}
         run: |

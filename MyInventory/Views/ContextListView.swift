@@ -328,7 +328,7 @@ struct ContextListView: View {
     // MARK: Mutations
 
     private func moveItem(_ item: SupplyItem, to category: SupplyCategory) {
-        item.category = category
+        item.move(to: category)   // reassign + touch() so the move wins LWW on merge
         do {
             try modelContext.save()
         } catch {
