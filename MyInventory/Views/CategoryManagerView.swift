@@ -224,7 +224,7 @@ struct CategoryManagerView: View {
                 Section {
                     ForEach(destinations) { cat in
                         Button {
-                            item.category = cat
+                            item.move(to: cat)   // reassign + touch() so the move wins LWW on merge
                             saveAndDismissItemMove()
                         } label: {
                             HStack {
@@ -336,8 +336,7 @@ struct CategoryManagerView: View {
         let items = category.unwrappedItems
         let destination = moveDestination ?? uncategorizedBucket()
         for item in items {
-            item.category = destination
-            item.touch()   // a reparent must win LWW on the next merge
+            item.move(to: destination)   // reparent + touch() must win LWW on the next merge
         }
         category.markDeleted()   // soft-delete the now-empty category
 

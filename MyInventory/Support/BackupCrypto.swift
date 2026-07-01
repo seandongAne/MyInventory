@@ -120,6 +120,9 @@ enum BackupCrypto {
     // MARK: KDF — KEK = Argon2id(passphrase, salt) at the FIXED cost (§3).
     static func deriveKek(passphrase: String, salt: [UInt8]) throws -> [UInt8] {
         try ensureInit()
+        // `crypto_pwhash` reads exactly `saltBytes` from the salt pointer; a crafted
+        // envelope can carry a shorter decoded salt, which would over-read. Fail closed.
+        guard salt.count == saltBytes else { throw CryptoError.corrupted }
         let password = Array(passphrase.utf8)
         guard !password.isEmpty else { throw CryptoError.kdfFailed }
         var out = [UInt8](repeating: 0, count: keyBytes)
@@ -171,6 +174,10 @@ enum BackupCrypto {
     static func aeadDecrypt(ciphertext: [UInt8], nonce: [UInt8], key: [UInt8]) throws -> [UInt8] {
         try ensureInit()
         guard ciphertext.count >= tagBytes else { throw CryptoError.corrupted }
+        // libsodium reads a FIXED nonce/key length from these pointers; a crafted `.scbk`
+        // can supply a shorter decoded nonce/key, which would over-read the heap. Validate
+        // before the C call so a malformed backup fails closed instead of touching OOB memory.
+        guard nonce.count == nonceBytes, key.count == keyBytes else { throw CryptoError.corrupted }
         var message = [UInt8](repeating: 0, count: ciphertext.count - tagBytes)
         var messageLen: UInt64 = 0
         let status = message.withUnsafeMutableBufferPointer { msgBuf in

@@ -158,15 +158,18 @@ final class NotificationManager {
             guard let items = try? context.fetch(
                 FetchDescriptor<SupplyItem>(predicate: #Predicate { $0.deletedAt == nil })
             ) else { return }
-            // Widgets reflect the data regardless of notification permission.
-            WidgetBridge.writeSnapshot(for: items, globalLeadTimeDays: globalLeadTimeDays)
+            // Widgets reflect the data regardless of notification permission. Exclude
+            // merge-orphans under a tombstoned parent so the widget matches the in-app
+            // list (the notification planners below filter them independently).
+            let liveItems = items.filter { !$0.hasTombstonedAncestor }
+            WidgetBridge.writeSnapshot(for: liveItems, globalLeadTimeDays: globalLeadTimeDays)
             guard self.authorizationStatus == .authorized || self.authorizationStatus == .provisional else {
                 // Nothing is scheduled while unauthorized — don't show a stale
                 // failure count from an earlier authorized pass.
                 self.lastSchedulingFailureCount = 0
                 return
             }
-            await self.reschedule(items: items, globalLeadTimeDays: globalLeadTimeDays)
+            await self.reschedule(items: liveItems, globalLeadTimeDays: globalLeadTimeDays)
         }
     }
 
@@ -311,7 +314,9 @@ final class NotificationManager {
         var dueByDay: [Date: [UUID]] = [:]
         var leadByDay: [Date: [(uuid: UUID, days: Int)]] = [:]
 
-        for item in items {
+        // Skip merge-orphans whose parent context/category was tombstoned — they must
+        // not arm reminders (they're hidden everywhere in-app).
+        for item in items where !item.hasTombstonedAncestor {
             guard item.intervalValue != nil else { continue }   // never expires
             guard let due = item.nextDueDate(calendar: calendar), due > now else { continue }
             dueByDay[calendar.startOfDay(for: due), default: []].append(item.uuid)
@@ -388,7 +393,9 @@ final class NotificationManager {
                                  now: Date,
                                  calendar: Calendar = .current) -> AttentionSummary? {
         var summary = AttentionSummary()
-        for item in items {
+        // Skip merge-orphans under a tombstoned parent so the digest + app-icon badge
+        // match the in-app Needs Attention count.
+        for item in items where !item.hasTombstonedAncestor {
             switch item.status(leadTimeDays: globalLeadTimeDays, now: now, calendar: calendar) {
             case .overdue: summary.overdue += 1
             case .needsAttention: summary.flagged += 1

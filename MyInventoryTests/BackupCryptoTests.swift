@@ -178,6 +178,46 @@ final class BackupCryptoTests: XCTestCase {
         }
     }
 
+    // MARK: Fail-closed on malformed fixed-length fields (guard a heap over-read)
+    //
+    // libsodium reads a FIXED number of bytes from the nonce/salt/key pointers. A
+    // crafted `.scbk` can carry a shorter decoded value; without a length guard that
+    // over-reads the heap. These pin that such input throws instead of touching OOB memory.
+
+    func testAeadDecryptRejectsWrongLengthNonceAndKey() {
+        let cipher = [UInt8](repeating: 0, count: 32)   // ≥ tagBytes, so it clears that guard
+        let goodNonce = [UInt8](repeating: 0, count: BackupCrypto.nonceBytes)
+        let goodKey = [UInt8](repeating: 0, count: BackupCrypto.keyBytes)
+        XCTAssertThrowsError(try BackupCrypto.aeadDecrypt(ciphertext: cipher, nonce: [1, 2, 3], key: goodKey)) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+        XCTAssertThrowsError(try BackupCrypto.aeadDecrypt(ciphertext: cipher, nonce: goodNonce, key: [1, 2, 3])) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
+    func testDeriveKekRejectsWrongLengthSalt() {
+        XCTAssertThrowsError(try BackupCrypto.deriveKek(passphrase: "pw", salt: [1, 2, 3])) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
+    func testShortPayloadNonceFailsClosed() throws {
+        var env = try BackupCrypto.parseEnvelope(Data(sampleScbk.utf8))
+        env.payload.nonce = BackupCrypto.base64([1, 2, 3])   // 3 bytes, not 24
+        XCTAssertThrowsError(try BackupCrypto.decryptWithPassphrase(env, passphrase: passphrase)) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
+    func testShortKdfSaltFailsClosed() throws {
+        var env = try BackupCrypto.parseEnvelope(Data(sampleScbk.utf8))
+        env.kdf.salt = BackupCrypto.base64([1, 2, 3])   // 3 bytes, not 16
+        XCTAssertThrowsError(try BackupCrypto.decryptWithPassphrase(env, passphrase: passphrase)) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
     // MARK: Full round-trip with fresh (random) material
 
     func testRoundTripWithFreshMaterial() throws {

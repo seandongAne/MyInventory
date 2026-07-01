@@ -288,7 +288,10 @@ struct ContentView: View {
     }
 
     private var attentionCount: Int {
-        allItems.filter { $0.status(leadTimeDays: settings.globalLeadTimeDays).isAttention }.count
+        allItems
+            .filter { !$0.hasTombstonedAncestor }   // don't count merge-orphans under a dead parent
+            .filter { $0.status(leadTimeDays: settings.globalLeadTimeDays).isAttention }
+            .count
     }
 
     // MARK: Global search
@@ -298,7 +301,9 @@ struct ContentView: View {
     }
 
     private var searchResults: [SupplyItem] {
-        FuzzySearch.rank(allItems, query: debouncedSearch)
+        // Exclude merge-orphans whose parent context/category was soft-deleted — the
+        // item is still live but has no reachable home, so it must not appear here.
+        FuzzySearch.rank(allItems.filter { !$0.hasTombstonedAncestor }, query: debouncedSearch)
     }
 
     @ViewBuilder
