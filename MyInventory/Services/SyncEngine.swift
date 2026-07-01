@@ -87,6 +87,10 @@ final class SyncEngine {
 
     private(set) var state: SyncState
 
+    /// When the last successful sync completed (survives a later error, so the
+    /// foreground trigger can tell whether we're stale). `nil` until the first sync.
+    private(set) var lastSyncedAt: Date?
+
     private let transport: SyncTransport
     private let cipher: SyncCipher
     private let modelContext: ModelContext
@@ -133,7 +137,9 @@ final class SyncEngine {
         do {
             let resolved = try await transport.resolveFile()
             try await runCycle(fileId: resolved.fileId, attempt: 0)
-            state = .synced(now())
+            let syncedAt = now()
+            lastSyncedAt = syncedAt
+            state = .synced(syncedAt)
         } catch let error as SyncTransportError {
             state = .error(Self.map(error))
         } catch is SyncDecryptFailure {
@@ -144,6 +150,59 @@ final class SyncEngine {
         }
         return state
     }
+
+    // MARK: Sign-in gate
+
+    /// Enter the signed-in resting state. C-0 flips `signedOut → idle` so the wired
+    /// transport becomes usable; C-1 replaces this with the real Google sign-in that
+    /// obtains a token before flipping state.
+    func signIn() {
+        guard state == .signedOut else { return }
+        state = .idle
+    }
+
+    /// Return to the signed-out state and forget per-session sync bookkeeping so a
+    /// later re-sign-in starts clean (the next sync re-pulls and re-merges).
+    func signOut() {
+        pendingChangeTask?.cancel()
+        pendingChangeTask = nil
+        lastSyncedAt = nil
+        lastPushedDigest = nil
+        state = .signedOut
+    }
+
+    // MARK: Triggers (design §7)
+
+    /// Manual trigger — the Settings "Sync now" button.
+    @discardableResult
+    func syncNow() async -> SyncState { await syncOnce() }
+
+    /// Foreground trigger — sync when the app becomes active, but only if signed-in
+    /// and we haven't synced within `staleAfter` (so re-opening a pad pulls the other's
+    /// changes without hammering Drive on every quick switch). A no-op while syncing.
+    func syncOnForegroundIfStale(staleAfter: TimeInterval = 120) async {
+        guard state != .signedOut, state != .syncing else { return }
+        if let last = lastSyncedAt, now().timeIntervalSince(last) < staleAfter { return }
+        await syncOnce()
+    }
+
+    /// Debounced "after local edits" trigger — any mutation that bumps `modifiedAt`
+    /// calls this; a coalescing timer fires one sync once edits settle, so a burst of
+    /// changes (or keystrokes) produces a single push, not one per change. Same debounce
+    /// idiom as the search `task(id:)` guard: a bare `try?` would fall through on
+    /// cancellation and defeat the coalescing.
+    func noteLocalChange(debounce: Duration = .seconds(15)) {
+        guard state != .signedOut else { return }
+        pendingChangeTask?.cancel()
+        pendingChangeTask = Task { [weak self] in
+            guard (try? await Task.sleep(for: debounce)) != nil else { return }
+            await self?.syncOnce()
+        }
+    }
+
+    /// The in-flight debounced-change timer, if any — exposed so tests can await the
+    /// coalesced sync without a fixed sleep.
+    private(set) var pendingChangeTask: Task<Void, Never>?
 
     /// One `resolveFile → pull → (decrypt+merge) → export → digest → encrypt → push`
     /// pass. On a push `Conflict` it re-pulls and recurses (bounded) — the merge is LWW

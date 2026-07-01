@@ -12,6 +12,31 @@
 //
 
 import Foundation
+import SwiftData
+
+/// Identity cipher for the local preview / dev engine — the fake remote is in-memory,
+/// so E2EE is moot; the blob is just the export JSON. Real sync uses `SCBK1SyncCipher`.
+struct PassthroughSyncCipher: SyncCipher {
+    func encrypt(_ plaintext: Data) throws -> Data { plaintext }
+    func decrypt(_ ciphertext: Data) throws -> Data { ciphertext }
+}
+
+extension SyncEngine {
+    /// A self-contained engine backed by the in-memory fake + passthrough cipher, used
+    /// to drive the Settings sync UI + triggers end-to-end before `DriveTransport`
+    /// exists (C-0). Not a real backend — the "remote" is process-local and resets on
+    /// relaunch; it is only wired live under the `-syncDemo` launch argument.
+    @MainActor
+    static func localPreview(modelContext: ModelContext,
+                             settings: SettingsStore?,
+                             signedIn: Bool = false) -> SyncEngine {
+        SyncEngine(transport: FakeSyncTransport(),
+                   cipher: PassthroughSyncCipher(),
+                   modelContext: modelContext,
+                   settings: settings,
+                   signedIn: signedIn)
+    }
+}
 
 final class FakeSyncTransport: SyncTransport {
 

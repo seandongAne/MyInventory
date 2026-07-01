@@ -17,6 +17,11 @@ struct SettingsView: View {
     /// any other call sites compile unchanged.
     var onReplayGuide: () -> Void = {}
 
+    /// Whether the Cloud Sync controls are interactive. Only true under the `-syncDemo`
+    /// launch argument while the real `DriveTransport` is still OAuth-blocked (C-0), so a
+    /// normal build shows the forward-looking "coming soon" state instead of a fake sync.
+    private let syncDemoEnabled = ProcessInfo.processInfo.arguments.contains("-syncDemo")
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(SettingsStore.self) private var settings
@@ -122,8 +127,9 @@ struct SettingsView: View {
                 Text("Creates an encrypted .scbk file you can keep in any cloud drive and restore on your other device — it works across iPad and Android. Only your passphrase or recovery key can open it; the cloud never sees your data. Restoring adds anything missing and never overwrites or deletes what's already here.")
             }
 
+            SyncStatusSection(demoEnabled: syncDemoEnabled)
+
             Section {
-                LabeledContent("iCloud sync", value: "Local only")
                 if let backupURL {
                     ShareLink(item: backupURL,
                               preview: SharePreview(backupURL.lastPathComponent,
@@ -140,9 +146,9 @@ struct SettingsView: View {
                     Label("Restore Unencrypted Copy…", systemImage: "square.and.arrow.down")
                 }
             } header: {
-                Text("Sync & Plain Export")
+                Text("Plain Export")
             } footer: {
-                Text("Your data is stored privately on this device; iCloud sync is planned for a later version. This plain JSON copy is NOT encrypted — anyone who opens the file can read it, so keep it private. It includes every context, item, and check (photos aren't included). Prefer the encrypted backup above for anything you put in the cloud.")
+                Text("This plain JSON copy is NOT encrypted — anyone who opens the file can read it, so keep it private. It includes every context, item, and check (photos aren't included). Prefer the encrypted backup above for anything you put in the cloud.")
             }
 
             Section {
@@ -419,9 +425,12 @@ struct SettingsView: View {
 }
 
 #Preview {
-    NavigationStack { SettingsView() }
-        .modelContainer(for: [SupplyContext.self, SupplyCategory.self, SupplyItem.self, CheckRecord.self],
-                        inMemory: true)
+    let container = try! ModelContainer(
+        for: SupplyContext.self, SupplyCategory.self, SupplyItem.self, CheckRecord.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    return NavigationStack { SettingsView() }
+        .modelContainer(container)
         .environment(SettingsStore())
         .environment(NotificationManager())
+        .environment(SyncEngine.localPreview(modelContext: container.mainContext, settings: nil))
 }

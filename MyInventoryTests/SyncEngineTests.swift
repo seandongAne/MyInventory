@@ -239,6 +239,99 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(fake.pushCount, 1, "one cycle, one upload — the guard blocked the second")
     }
 
+    // MARK: Triggers
+
+    func testSignInSignOutTransitions() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let sut = engine(FakeSyncTransport(), ctx, signedIn: false)
+
+        XCTAssertEqual(sut.state, .signedOut)
+        sut.signIn()
+        XCTAssertEqual(sut.state, .idle)
+
+        _ = await sut.syncNow()
+        XCTAssertNotNil(sut.lastSyncedAt)
+
+        sut.signOut()
+        XCTAssertEqual(sut.state, .signedOut)
+        XCTAssertNil(sut.lastSyncedAt, "sign-out clears per-session bookkeeping")
+    }
+
+    func testSyncNowRunsACycle() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()
+
+        _ = await engine(transport, ctx).syncNow()
+
+        XCTAssertEqual(transport.pushCount, 1)
+    }
+
+    func testForegroundSyncSkipsWhenRecentlySynced() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()
+        let sut = engine(transport, ctx)
+
+        _ = await sut.syncNow()                              // lastSyncedAt = fixedNow
+        let pushes = transport.pushCount
+        await sut.syncOnForegroundIfStale(staleAfter: 120)   // now == last → not stale
+
+        XCTAssertEqual(transport.pushCount, pushes, "a recent sync isn't repeated on foreground")
+    }
+
+    func testForegroundSyncRunsWhenStale() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()
+        var clock = fixedNow
+        let sut = SyncEngine(transport: transport, cipher: PassthroughCipher(),
+                             modelContext: ctx, settings: nil, signedIn: true, now: { clock })
+
+        _ = await sut.syncNow()                              // lastSyncedAt = fixedNow
+        clock = fixedNow.addingTimeInterval(300)             // 5 min later
+        await sut.syncOnForegroundIfStale(staleAfter: 120)   // stale → syncs
+
+        XCTAssertEqual(sut.state, .synced(clock))
+        XCTAssertEqual(sut.lastSyncedAt, clock)
+    }
+
+    func testForegroundSyncIsNoOpWhenSignedOut() async throws {
+        let ctx = try makeStore()
+        let transport = FakeSyncTransport()
+        let sut = engine(transport, ctx, signedIn: false)
+
+        await sut.syncOnForegroundIfStale()
+
+        XCTAssertEqual(sut.state, .signedOut)
+        XCTAssertEqual(transport.resolveCount, 0)
+    }
+
+    func testDebouncedDirtyChangesCoalesceToOneSync() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()
+        let sut = engine(transport, ctx)
+
+        // A burst of edits: only the last timer survives, so one sync fires.
+        sut.noteLocalChange(debounce: .milliseconds(20))
+        sut.noteLocalChange(debounce: .milliseconds(20))
+        sut.noteLocalChange(debounce: .milliseconds(20))
+        await sut.pendingChangeTask?.value
+
+        XCTAssertEqual(transport.pushCount, 1)
+    }
+
+    func testNoteLocalChangeIsIgnoredWhenSignedOut() async throws {
+        let ctx = try makeStore()
+        let sut = engine(FakeSyncTransport(), ctx, signedIn: false)
+
+        sut.noteLocalChange(debounce: .milliseconds(20))
+
+        XCTAssertNil(sut.pendingChangeTask, "no dirty timer while signed out")
+    }
+
     // MARK: Content digest
 
     func testContentDigestIgnoresExportedAtButTracksContent() async throws {
