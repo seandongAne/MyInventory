@@ -71,6 +71,12 @@ final class FakeSyncTransport: SyncTransport {
         }
     }
 
+    /// Non-isolated deinit for the same reason as `SettingsStore` — under the target's
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` this class is implicitly `@MainActor`,
+    /// and an isolated deinit trips a double-free in the iOS 26.2 simulator runtime's
+    /// executor-hop path. Its fields are all value types, so `nonisolated` is safe.
+    nonisolated deinit {}
+
     /// The current remote ciphertext (`nil` when empty) — for test assertions.
     var currentBytes: Data? { stored?.bytes }
     var currentVersion: SyncVersion? { stored?.version }

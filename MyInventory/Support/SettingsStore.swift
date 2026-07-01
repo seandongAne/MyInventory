@@ -173,6 +173,18 @@ final class SettingsStore {
         isReady = true
     }
 
+    /// Opt the deinit OUT of actor isolation. The app target builds with
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so this plain class is implicitly
+    /// `@MainActor` and would get a compiler-synthesized *isolated* deinit that hops the
+    /// executor via `swift_task_deinitOnExecutorImpl`. The iOS 26.2 simulator runtime
+    /// (what CI's Xcode 26.3 uses) double-frees in that path during
+    /// `TaskLocal::StopLookupScope` teardown, aborting the unit-test host with a flaky
+    /// `malloc: pointer being freed was not allocated` (fixed in newer runtimes, hence
+    /// local-green/CI-red). This deinit only releases value-typed fields + a
+    /// `SettingsDefaults` reference — nothing needs the main actor — so `nonisolated` is
+    /// behavior-neutral and simply avoids the buggy runtime path.
+    nonisolated deinit {}
+
     /// nil when no convenience default is configured (value 0 == "no default").
     var defaultIntervalValueOrNil: Int? {
         defaultIntervalValue > 0 ? defaultIntervalValue : nil
