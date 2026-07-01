@@ -614,6 +614,25 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(try dest.fetch(FetchDescriptor<CheckRecord>()).count, 2, "Missing check filled in")
     }
 
+    // MARK: - Restore summary wording (shared by Settings restore + "Open in…" file path)
+
+    func testRestoreDescriptionEmptySummary() {
+        XCTAssertEqual(DataImporter.Summary().restoreDescription,
+                       "Everything in this backup is already here — nothing to add.")
+    }
+
+    func testRestoreDescriptionPluralizesAdds() {
+        let s = DataImporter.Summary(contextsAdded: 2, itemsAdded: 1, checksAdded: 0)
+        XCTAssertEqual(s.restoreDescription, "Added 2 places, 1 item, and 0 checks.")
+    }
+
+    func testRestoreDescriptionAppendsUpdatedRemovedAndSettings() {
+        let s = DataImporter.Summary(contextsAdded: 0, itemsAdded: 1, checksAdded: 1,
+                                     updated: 1, removed: 3, settingsUpdated: true)
+        XCTAssertEqual(s.restoreDescription,
+                       "Added 0 places, 1 item, and 1 check. Updated 1 record. Removed 3 records. Updated your settings.")
+    }
+
     // MARK: - Templates
 
     func testTemplateApplyIsIdempotent() throws {

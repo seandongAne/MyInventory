@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Base Info.plist merged into the build-setting-generated one
+	  (GENERATE_INFOPLIST_FILE = YES + INFOPLIST_FILE = this). It carries only the
+	  keys that can't be expressed as scalar INFOPLIST_KEY_* build settings:
+	  the .scbk document type + its exported UTI, so the teacher can pick a
+	  Supplies Check encrypted backup from Files / a share sheet and choose
+	  "Open in MyInventory" (handled by ContentView's onOpenURL → restore sheet).
+	-->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>CharlieW.MyInventory.scbk</string>
+			<key>UTTypeDescription</key>
+			<string>Supplies Check encrypted backup</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>scbk</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Supplies Check encrypted backup</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>CharlieW.MyInventory.scbk</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

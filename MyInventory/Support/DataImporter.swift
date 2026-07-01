@@ -44,6 +44,26 @@ enum DataImporter {
             contextsAdded == 0 && categoriesAdded == 0 && itemsAdded == 0
                 && checksAdded == 0 && updated == 0 && removed == 0 && !settingsUpdated
         }
+
+        /// Human-readable restore summary shown after a backup merge. Shared by the
+        /// Settings → Restore flow and the "Open in MyInventory" file-open path so the
+        /// wording never drifts. Built in steps (no nested ternaries in one
+        /// interpolation) to keep type-checking fast.
+        var restoreDescription: String {
+            guard !isEmpty else {
+                return "Everything in this backup is already here — nothing to add."
+            }
+            func phrase(_ count: Int, _ noun: String) -> String {
+                "\(count) \(noun)\(count == 1 ? "" : "s")"
+            }
+            var message = "Added \(phrase(contextsAdded, "place")), "
+                + "\(phrase(itemsAdded, "item")), and "
+                + "\(phrase(checksAdded, "check"))."
+            if updated > 0 { message += " Updated \(phrase(updated, "record"))." }
+            if removed > 0 { message += " Removed \(phrase(removed, "record"))." }
+            if settingsUpdated { message += " Updated your settings." }
+            return message
+        }
     }
 
     enum ImportError: LocalizedError {

@@ -56,6 +56,13 @@ struct ContentView: View {
     @State private var contextPendingDeletion: SupplyContext?
     @State private var contextActionError: String?
 
+    // A ".scbk" opened from Files / a share sheet ("Open in MyInventory") — parsed
+    // here, unlocked in EncryptedRestoreSheet, then merged via the same LWW path as
+    // Settings → Restore.
+    @State private var pendingBackupRestore: PendingRestore?
+    @State private var backupRestoreSummary: String?
+    @State private var backupRestoreError: String?
+
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
@@ -194,6 +201,28 @@ struct ContentView: View {
             if phase == .active {
                 Task { await refreshNotifications() }
             }
+        }
+        .onOpenURL { url in
+            handleIncomingBackupFile(url)
+        }
+        .sheet(item: $pendingBackupRestore) { pending in
+            EncryptedRestoreSheet(envelope: pending.envelope, onDecrypted: mergeIncomingBackup)
+        }
+        .alert("Backup restored", isPresented: Binding(
+            get: { backupRestoreSummary != nil },
+            set: { if !$0 { backupRestoreSummary = nil } }
+        )) {
+            Button("OK", role: .cancel) { backupRestoreSummary = nil }
+        } message: {
+            if let backupRestoreSummary { Text(backupRestoreSummary) }
+        }
+        .alert("Couldn't open this backup", isPresented: Binding(
+            get: { backupRestoreError != nil },
+            set: { if !$0 { backupRestoreError = nil } }
+        )) {
+            Button("OK", role: .cancel) { backupRestoreError = nil }
+        } message: {
+            if let backupRestoreError { Text(backupRestoreError) }
         }
     }
 
@@ -464,6 +493,38 @@ struct ContentView: View {
         // Reminders for the now-deleted items must be cancelled and the rest refreshed.
         for uuid in uuids { notifications.cancelNotifications(forItemUUID: uuid) }
         notifications.rescheduleAll(in: modelContext, globalLeadTimeDays: settings.globalLeadTimeDays)
+    }
+
+    // MARK: Incoming backup file ("Open in MyInventory")
+
+    /// Handles a `.scbk` opened from Files or another app's share sheet. Parses the
+    /// envelope and presents the unlock sheet; decryption + merge happen on unlock,
+    /// the same path as Settings → Restore. Non-`.scbk` URLs are ignored.
+    private func handleIncomingBackupFile(_ url: URL) {
+        guard url.pathExtension.lowercased() == "scbk" else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            let envelope = try BackupCrypto.parseEnvelope(data)
+            pendingBackupRestore = PendingRestore(envelope: envelope)
+        } catch {
+            backupRestoreError = error.localizedDescription
+        }
+    }
+
+    /// Merges decrypted backup JSON (from the unlock sheet) into the store — the same
+    /// non-destructive LWW merge as Settings → Restore — then reschedules reminders.
+    private func mergeIncomingBackup(_ plaintext: String) {
+        do {
+            let export = try DataImporter.decode(Data(plaintext.utf8))
+            let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
+            backupRestoreSummary = summary.restoreDescription
+            Haptics.success()
+            Task { await refreshNotifications() }
+        } catch {
+            backupRestoreError = error.localizedDescription
+        }
     }
 
     // MARK: Notifications

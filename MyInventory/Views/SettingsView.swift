@@ -235,9 +235,10 @@ struct SettingsView: View {
             }
     }
 
-    /// `.scbk` content type, resolved from the filename extension. SCBK1 files
-    /// aren't a registered system type, so this dynamic type lets the picker show
-    /// them without declaring an exported UTType in the (generated) Info.plist.
+    /// `.scbk` content type for the import picker, resolved from the filename
+    /// extension. The app now declares an exported `CharlieW.MyInventory.scbk` UTType
+    /// (Info.plist), so this lookup resolves to that registered type; the `.data`
+    /// fallback keeps the picker working even if the declaration is ever missing.
     private static let scbkContentType: UTType = UTType(filenameExtension: "scbk") ?? .data
 
     // MARK: Bindings / derived
@@ -369,7 +370,7 @@ struct SettingsView: View {
                 let data = try Data(contentsOf: url)
                 let export = try DataImporter.decode(data)
                 let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
-                restoreSummary = restoreMessage(for: summary)
+                restoreSummary = summary.restoreDescription
                 // New items may be due — refresh reminders + the freshly-exportable backup.
                 rescheduleNotifications()
                 prepareBackup()
@@ -406,7 +407,7 @@ struct SettingsView: View {
         do {
             let export = try DataImporter.decode(Data(plaintext.utf8))
             let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
-            restoreSummary = restoreMessage(for: summary)
+            restoreSummary = summary.restoreDescription
             rescheduleNotifications()
             prepareBackup()
             Haptics.success()
@@ -415,30 +416,6 @@ struct SettingsView: View {
         }
     }
 
-    /// Human-readable summary of a restore. Built in steps (no nested ternaries in
-    /// one interpolation) so the type-checker stays fast.
-    private func restoreMessage(for summary: DataImporter.Summary) -> String {
-        guard !summary.isEmpty else {
-            return "Everything in this backup is already here — nothing to add."
-        }
-        func phrase(_ count: Int, _ noun: String) -> String {
-            "\(count) \(noun)\(count == 1 ? "" : "s")"
-        }
-        var message = "Added \(phrase(summary.contextsAdded, "place")), "
-            + "\(phrase(summary.itemsAdded, "item")), and "
-            + "\(phrase(summary.checksAdded, "check"))."
-        // A newer backup can also update or remove existing rows (Phase-2 sync).
-        if summary.updated > 0 {
-            message += " Updated \(phrase(summary.updated, "record"))."
-        }
-        if summary.removed > 0 {
-            message += " Removed \(phrase(summary.removed, "record"))."
-        }
-        if summary.settingsUpdated {
-            message += " Updated your settings."
-        }
-        return message
-    }
 }
 
 #Preview {
