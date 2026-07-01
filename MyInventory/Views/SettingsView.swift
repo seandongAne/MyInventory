@@ -216,7 +216,7 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingEncryptedExport) {
                 EncryptedBackupSheet(makePlaintext: {
-                    String(decoding: try DataExporter.makeExport(from: modelContext), as: UTF8.self)
+                    String(decoding: try DataExporter.makeExport(from: modelContext, settings: settings), as: UTF8.self)
                 })
             }
             .sheet(item: $pendingRestore) { pending in
@@ -335,7 +335,7 @@ struct SettingsView: View {
     /// cloud drive, or AirDropped. Regenerated each time Settings opens.
     private func prepareBackup() {
         do {
-            let data = try DataExporter.makeExport(from: modelContext)
+            let data = try DataExporter.makeExport(from: modelContext, settings: settings)
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(DataExporter.defaultFilename())
                 .appendingPathExtension("json")
@@ -361,7 +361,7 @@ struct SettingsView: View {
             do {
                 let data = try Data(contentsOf: url)
                 let export = try DataImporter.decode(data)
-                let summary = try DataImporter.merge(export, into: modelContext)
+                let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
                 restoreSummary = restoreMessage(for: summary)
                 // New items may be due — refresh reminders + the freshly-exportable backup.
                 rescheduleNotifications()
@@ -398,7 +398,7 @@ struct SettingsView: View {
     private func mergeDecrypted(_ plaintext: String) {
         do {
             let export = try DataImporter.decode(Data(plaintext.utf8))
-            let summary = try DataImporter.merge(export, into: modelContext)
+            let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
             restoreSummary = restoreMessage(for: summary)
             rescheduleNotifications()
             prepareBackup()
@@ -426,6 +426,9 @@ struct SettingsView: View {
         }
         if summary.removed > 0 {
             message += " Removed \(phrase(summary.removed, "record"))."
+        }
+        if summary.settingsUpdated {
+            message += " Updated your settings."
         }
         return message
     }

@@ -37,10 +37,12 @@ enum DataImporter {
         // live rows tombstoned by a newer incoming delete.
         var updated = 0
         var removed = 0
+        // The synced settings singleton was replaced by a newer incoming version.
+        var settingsUpdated = false
 
         var isEmpty: Bool {
             contextsAdded == 0 && categoriesAdded == 0 && itemsAdded == 0
-                && checksAdded == 0 && updated == 0 && removed == 0
+                && checksAdded == 0 && updated == 0 && removed == 0 && !settingsUpdated
         }
     }
 
@@ -71,7 +73,9 @@ enum DataImporter {
     /// once at the end (rollback + rethrow on failure, per the store invariant).
     @MainActor
     @discardableResult
-    static func merge(_ export: DataExporter.Export, into modelContext: ModelContext) throws -> Summary {
+    static func merge(_ export: DataExporter.Export,
+                      into modelContext: ModelContext,
+                      settings: SettingsStore? = nil) throws -> Summary {
         var summary = Summary()
 
         // Index everything already present once, so matching is O(1) and we never
@@ -225,6 +229,23 @@ enum DataImporter {
             modelContext.rollback()
             throw error
         }
+
+        // Settings live in UserDefaults (SettingsStore), not the model context, so
+        // they merge separately — whole-object LWW on the singleton's modifiedAt.
+        // Only a strictly-newer incoming version wins (equal keeps local → re-import
+        // is a no-op). Applied after the entity save so a failed import changes nothing.
+        if let store = settings, let dto = export.settings,
+           dto.modifiedAt > store.settingsModifiedAt {
+            store.applyMergedSettings(
+                globalLeadTimeDays: dto.globalLeadTimeDays,
+                defaultIntervalValue: dto.defaultIntervalValue ?? 0,
+                defaultIntervalUnit: dto.defaultIntervalUnit,
+                notificationFireHour: dto.notificationFireHour,
+                modifiedAt: dto.modifiedAt
+            )
+            summary.settingsUpdated = true
+        }
+
         return summary
     }
 }
