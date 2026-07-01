@@ -11,13 +11,12 @@ import XCTest
 
 final class SettingsStoreTests: XCTestCase {
 
-    /// A throwaway UserDefaults domain so each test starts clean and never touches
-    /// the real `.standard` suite.
+    /// A dictionary-backed UserDefaults so each test starts clean and never touches
+    /// the real `.standard` suite. Uses `InMemoryDefaults` rather than a real
+    /// `UserDefaults(suiteName:)` because creating/removing transient CFPreferences
+    /// suites intermittently crashed the CI test host with a malloc double-free.
     private func freshDefaults(_ name: String = #function) -> UserDefaults {
-        let suite = "SettingsStoreTests.\(name)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
+        InMemoryDefaults()
     }
 
     // MARK: Fresh install
