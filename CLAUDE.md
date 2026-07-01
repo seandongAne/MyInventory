@@ -307,19 +307,29 @@ Widget (`MyInventoryWidgets/`, separate appex target)
 
 - **Merge discipline — clear codex's findings, then merge (NOT just CI)** (shared convention
   with the `Brief-CC` repo). CI green is necessary but **not sufficient**: the async codex
-  review (`chatgpt-codex-connector[bot]`) never APPROVEs and is not a status check. Its
-  findings arrive **event-driven** — don't poll for a "verdict" or chase whether codex
-  re-reviewed the exact HEAD (a clean pass may signal as just a 👍).
-  1. **Resolve every codex P-badge thread**: fix + push, or reply why it's a false positive
+  review (`chatgpt-codex-connector[bot]`) never APPROVEs and is not a status check — **it
+  signals with an emoji REACTION on the PR itself**: 👀 (`eyes`) = still reviewing, 👍 (`+1`)
+  = reviewed with **no findings**. A clean pass leaves ZERO comment threads — **the 👍
+  reaction is the only signal**; findings instead arrive as P-badge review-comment threads.
+  So checking review threads ALONE is a trap (a not-yet-reviewed PR and a clean-reviewed PR
+  both show 0 threads) — **always also check the reaction**. Reactions are event-driven;
+  don't chase whether codex re-reviewed the exact HEAD.
+  1. **Wait for codex to actually finish** — it must have reacted 👍 *or* posted findings.
+     **Never merge while it's still 👀, or before it has reacted at all** (that's the miss we
+     keep making). After you fix + push findings, wait for the re-review to settle again.
+  2. **Resolve every codex P-badge thread**: fix + push, or reply why it's a false positive
      — either way **resolve the thread** (a reply alone doesn't clear it; the resolve is the
      single "handled" signal).
-  2. **Merge when:** CI green · **0 unresolved codex threads** — then merge directly (squash,
-     delete the branch). **No separate human sign-off is required**: once CI is green and every
-     codex thread is resolved, merging is autonomous (don't wait to be told to merge). The one
-     check command:
+  3. **Merge when:** CI green · codex has reacted (👍, or all its threads resolved) · **0
+     unresolved codex threads** — then merge directly (squash, delete the branch). **No human
+     sign-off is required** (don't wait to be told to merge). The two checks:
      ```bash
+     # codex reaction: eyes = still reviewing (wait) · +1 = clean · empty = hasn't reviewed yet (wait)
+     gh api repos/seandongAne/MyInventory/issues/N/reactions \
+       --jq '.[]|select(.user.login|startswith("chatgpt-codex"))|.content'
+     # unresolved codex threads — must be 0
      gh api graphql -f query='{repository(owner:"seandongAne",name:"MyInventory"){pullRequest(number:N){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}' \
-       --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select((.comments.nodes[0].author.login|startswith("chatgpt-codex")) and (.isResolved==false))]|length'   # must be 0
+       --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select((.comments.nodes[0].author.login|startswith("chatgpt-codex")) and (.isResolved==false))]|length'
      ```
 - ⚠️ **Never write a literal `@`+`codex` mention** in a PR comment or committed doc — codex
   parses it and replies with a config notice (pure noise).
