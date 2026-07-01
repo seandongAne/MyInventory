@@ -68,12 +68,17 @@ jobs:
           [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
           [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
           echo "Using simulator: ${DEST_ID:-<none found>}"
+          # Serial, like the UI job: parallel simulator clones intermittently fail to
+          # launch the unsigned test runner ("crashed while preparing to run tests" →
+          # Exceeded max restart count), which flakes the whole job. Class-parallelism
+          # buys nothing here — the suite runs in ~1.5s.
           xcodebuild test \
             -project MyInventory.xcodeproj \
             -scheme MyInventory \
             -destination "platform=iOS Simulator,id=$DEST_ID" \
             -derivedDataPath build/DD \
             -only-testing:MyInventoryTests \
+            -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
 
   ui-tests:

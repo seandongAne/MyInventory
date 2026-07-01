@@ -112,7 +112,23 @@ the *serialization*. These four rules are where the two apps previously diverged
 
 Nullable fields are `null` or omitted (a reader MUST treat an absent key as `null`;
 iOS omits nil optionals, Android emits explicit `null` — both decode identically).
-Photos and local-only fields (notifications, per-device settings) are never in the payload.
+
+**Settings singleton** — an optional top-level `settings` object carries the *synced*
+subset of app settings (a whole-object LWW singleton; merge in §6):
+
+| Field | Wire format | Notes |
+|---|---|---|
+| `globalLeadTimeDays` | int (days) | advance-warning / "due soon" window |
+| `defaultIntervalValue` | int, or `null` = **no default** | pre-fills the interval of new items |
+| `defaultIntervalUnit` | `"days"` \| `"months"` \| `"years"` | retained even when the value is null |
+| `notificationFireHour` | int 0–23 | local hour of day reminders fire |
+| `modifiedAt` | ISO-8601 UTC instant (as above) | the whole-object LWW key |
+
+`settings` is **optional**: older/minimal backups omit it, and a reader that predates it
+ignores the key. Only these synced fields travel — truly **local-only** state (notification
+IDs + scheduling, permission-requested, onboarding-completed) and **photos** are never in
+the payload. (iOS stores `defaultIntervalValue` as `0` for "no default" and maps `0 ↔ null`
+at the wire boundary; Android stores it nullable directly.)
 
 Readers SHOULD also accept legacy same-app values for back-compat (iOS: a full-ISO check
 `date` and `"OK"`-cased result from pre-S2 `.json` exports).
@@ -128,15 +144,18 @@ Decrypt → parse → **uuid-keyed merge**, idempotent (re-importing the same fi
   an older or equal incoming version is ignored (local stays — equality keeps the no-op).
 - **Checks are append-only**: union by uuid, with a **monotonic tombstone** (once a check is
   deleted on either side it stays deleted; checks carry no `modifiedAt` LWW).
+- **Settings** is a singleton merged by **whole-object last-write-wins** on its own
+  `modifiedAt`: a strictly-newer incoming `settings` replaces the *entire* local set at once;
+  an equal or older one is ignored. An unedited device seeds `settings.modifiedAt` at the
+  epoch so its untouched defaults never win over a peer that actually changed settings.
 
 Every local mutation (edit, reparent, delete) MUST stamp `modifiedAt` for this ordering to
 work. An OLDER backup never clobbers newer local data; a NEWER backup can update or remove
 local rows — that is the point of sync.
 
-> Implementation status: **iOS `DataImporter` does LWW + tombstones (S3/A).** Android's
-> importer is still the Phase-1 additive merge (it ignores `deletedAt` and never overwrites)
-> until its matching update lands — forward-compatible because the extra `deletedAt` field is
-> simply skipped, so no flag day.
+> Implementation status: **both apps do LWW + tombstones + the settings singleton (S3).**
+> Wire fields are additive and optional, so a reader that predates any of them simply skips
+> it — no flag day.
 
 ## 7. Conformance
 

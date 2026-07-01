@@ -22,8 +22,8 @@ struct SettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(NotificationManager.self) private var notifications
 
-    // Remembers the last non-zero interval so toggling off then on restores it (M2).
-    @State private var lastIntervalMonths: Int = 12
+    // Remembers the last non-zero interval value so toggling off then on restores it (M2).
+    @State private var lastIntervalValue: Int = 12
 
     // Export — a JSON backup written to a temp file and offered through the system
     // share sheet (Mail / Save to Files / cloud drives / AirDrop), so it can leave
@@ -65,10 +65,16 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Default interval for new items", isOn: defaultIntervalEnabled)
-                if settings.defaultIntervalMonths > 0 {
-                    PresetValuePicker("Every", value: defaultIntervalMonths,
-                                      presets: [1, 3, 6, 12, 24], range: 1...240,
-                                      format: monthsText)
+                if settings.defaultIntervalValue > 0 {
+                    Picker("Unit", selection: defaultIntervalUnit) {
+                        ForEach(IntervalUnit.allCases) { unit in
+                            Text(unit.displayName).tag(unit)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    PresetValuePicker("Every", value: defaultIntervalValue,
+                                      presets: intervalPresets, range: 1...intervalRangeMax,
+                                      format: { "\($0) \(settings.defaultIntervalUnitValue.noun(for: $0))" })
                 }
             } header: {
                 Text("New item defaults")
@@ -169,8 +175,8 @@ struct SettingsView: View {
             }
             .task {
                 await notifications.refreshAuthorizationStatus()
-                if settings.defaultIntervalMonths > 0 {
-                    lastIntervalMonths = settings.defaultIntervalMonths
+                if settings.defaultIntervalValue > 0 {
+                    lastIntervalValue = settings.defaultIntervalValue
                 }
                 prepareBackup()
             }
@@ -179,6 +185,13 @@ struct SettingsView: View {
             }
             .onChange(of: settings.notificationFireHour) { _, _ in
                 rescheduleNotifications()   // re-add every pending request at the new hour
+            }
+            .onChange(of: settings.settingsModifiedAt) { _, _ in
+                // Every synced-setting edit (lead time, reminder hour, default interval
+                // value/unit) bumps settingsModifiedAt. Regenerate the plain-backup temp
+                // file so "Export Unencrypted Copy…" never shares a pre-edit snapshot —
+                // its ShareLink points at the file made by prepareBackup().
+                prepareBackup()
             }
             .alert("Export failed", isPresented: Binding(
                 get: { exportError != nil },
@@ -210,7 +223,7 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingEncryptedExport) {
                 EncryptedBackupSheet(makePlaintext: {
-                    String(decoding: try DataExporter.makeExport(from: modelContext), as: UTF8.self)
+                    String(decoding: try DataExporter.makeExport(from: modelContext, settings: settings), as: UTF8.self)
                 })
             }
             .sheet(item: $pendingRestore) { pending in
@@ -231,31 +244,56 @@ struct SettingsView: View {
 
     private var defaultIntervalEnabled: Binding<Bool> {
         Binding(
-            get: { settings.defaultIntervalMonths > 0 },
+            get: { settings.defaultIntervalValue > 0 },
             set: { enabled in
                 if enabled {
-                    settings.defaultIntervalMonths = lastIntervalMonths
+                    settings.defaultIntervalValue = lastIntervalValue
                 } else {
-                    lastIntervalMonths = settings.defaultIntervalMonths
-                    settings.defaultIntervalMonths = 0
+                    lastIntervalValue = settings.defaultIntervalValue
+                    settings.defaultIntervalValue = 0
                 }
             }
         )
     }
 
-    private var defaultIntervalMonths: Binding<Int> {
+    private var defaultIntervalValue: Binding<Int> {
         Binding(
-            get: { settings.defaultIntervalMonths },
-            set: { settings.defaultIntervalMonths = $0 }
+            get: { settings.defaultIntervalValue },
+            set: { settings.defaultIntervalValue = $0 }
         )
     }
 
-    private func monthsText(_ months: Int) -> String {
-        if months % 12 == 0 {
-            let years = months / 12
-            return "\(years) year\(years == 1 ? "" : "s")"
+    private var defaultIntervalUnit: Binding<IntervalUnit> {
+        Binding(
+            get: { settings.defaultIntervalUnitValue },
+            set: { unit in
+                settings.defaultIntervalUnit = unit.rawValue
+                // Re-clamp the value into the new unit's range so a months-only
+                // preset like 24 doesn't survive a switch to years.
+                let max = intervalRangeMax(for: unit)
+                if settings.defaultIntervalValue > max {
+                    settings.defaultIntervalValue = max
+                }
+            }
+        )
+    }
+
+    private var intervalPresets: [Int] {
+        switch settings.defaultIntervalUnitValue {
+        case .days: return [7, 14, 30, 60, 90]
+        case .months: return [1, 3, 6, 12, 24]
+        case .years: return [1, 2, 3, 5]
         }
-        return "\(months) month\(months == 1 ? "" : "s")"
+    }
+
+    private var intervalRangeMax: Int { intervalRangeMax(for: settings.defaultIntervalUnitValue) }
+
+    private func intervalRangeMax(for unit: IntervalUnit) -> Int {
+        switch unit {
+        case .days: return 365
+        case .months: return 240
+        case .years: return 50
+        }
     }
 
     /// "9:00 AM" / "21:00" matching the user's locale.
@@ -304,7 +342,7 @@ struct SettingsView: View {
     /// cloud drive, or AirDropped. Regenerated each time Settings opens.
     private func prepareBackup() {
         do {
-            let data = try DataExporter.makeExport(from: modelContext)
+            let data = try DataExporter.makeExport(from: modelContext, settings: settings)
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(DataExporter.defaultFilename())
                 .appendingPathExtension("json")
@@ -330,7 +368,7 @@ struct SettingsView: View {
             do {
                 let data = try Data(contentsOf: url)
                 let export = try DataImporter.decode(data)
-                let summary = try DataImporter.merge(export, into: modelContext)
+                let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
                 restoreSummary = restoreMessage(for: summary)
                 // New items may be due — refresh reminders + the freshly-exportable backup.
                 rescheduleNotifications()
@@ -367,7 +405,7 @@ struct SettingsView: View {
     private func mergeDecrypted(_ plaintext: String) {
         do {
             let export = try DataImporter.decode(Data(plaintext.utf8))
-            let summary = try DataImporter.merge(export, into: modelContext)
+            let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
             restoreSummary = restoreMessage(for: summary)
             rescheduleNotifications()
             prepareBackup()
@@ -395,6 +433,9 @@ struct SettingsView: View {
         }
         if summary.removed > 0 {
             message += " Removed \(phrase(summary.removed, "record"))."
+        }
+        if summary.settingsUpdated {
+            message += " Updated your settings."
         }
         return message
     }

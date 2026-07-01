@@ -18,6 +18,18 @@ enum DataExporter {
         var schemaVersion = 2
         let exportedAt: Date
         let contexts: [ContextDTO]
+        // Synced settings singleton (whole-object LWW by `modifiedAt`). Optional:
+        // absent in older/minimal backups; a reader that predates it just ignores
+        // it. See docs/SCBK1_Format.md §5/§6.
+        var settings: SettingsDTO? = nil
+    }
+
+    struct SettingsDTO: Codable {
+        let globalLeadTimeDays: Int
+        let defaultIntervalValue: Int?   // null = no default
+        let defaultIntervalUnit: String
+        let notificationFireHour: Int
+        let modifiedAt: Date
     }
 
     // uuid fields are Strings (not UUID) so they serialize as LOWERCASE per the
@@ -75,8 +87,12 @@ enum DataExporter {
     }
 
     /// Encodes everything reachable from the store into pretty-printed JSON.
+    /// `settings`, when provided, is carried as the synced singleton; passing nil
+    /// omits it (e.g. tests that only care about the entity hierarchy).
     @MainActor
-    static func makeExport(from modelContext: ModelContext, now: Date = .now) throws -> Data {
+    static func makeExport(from modelContext: ModelContext,
+                           settings: SettingsStore? = nil,
+                           now: Date = .now) throws -> Data {
         let contexts = try modelContext.fetch(
             FetchDescriptor<SupplyContext>(sortBy: [SortDescriptor(\.sortOrder)])
         )
@@ -132,6 +148,15 @@ enum DataExporter {
                                 }
                         )
                     }
+                )
+            },
+            settings: settings.map { store in
+                SettingsDTO(
+                    globalLeadTimeDays: store.globalLeadTimeDays,
+                    defaultIntervalValue: store.defaultIntervalValueOrNil,
+                    defaultIntervalUnit: store.defaultIntervalUnit,
+                    notificationFireHour: store.notificationFireHour,
+                    modifiedAt: store.settingsModifiedAt
                 )
             }
         )

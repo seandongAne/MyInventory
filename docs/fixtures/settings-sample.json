@@ -1,0 +1,10 @@
+{
+  "_comment": "Shared cross-platform sample of the SCBK1 synced settings singleton (docs/SCBK1_Format.md §5/§6). Byte-identical in the iOS (MyInventory) and Android (supplies-check) repos. Android backup.test.ts and iOS SettingsSyncTests both parse this to prove identical decode + whole-object last-write-wins. `defaultIntervalValue` null would mean 'no default'; here it is set to 3 years to exercise a non-default value.",
+  "settings": {
+    "globalLeadTimeDays": 14,
+    "defaultIntervalValue": 3,
+    "defaultIntervalUnit": "years",
+    "notificationFireHour": 8,
+    "modifiedAt": "2026-06-20T08:00:00Z"
+  }
+}

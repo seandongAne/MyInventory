@@ -295,7 +295,39 @@ E2EE backup is acceptable, even convenient.)
 
 Operational prerequisite for Phase 2: a Google Cloud project with OAuth consent screen and
 per-platform OAuth client IDs (iOS + Android), set up under the **teacher's own Google
-account** — the owner's task (§13 #6).
+account** — the owner's task (§13 #6). Concrete steps in §8.2.
+
+### 8.2 OAuth project setup checklist (owner task)
+
+Done once at [console.cloud.google.com](https://console.cloud.google.com) under the
+teacher's **own Google account** (the account whose Drive holds the `.scbk`). Identifiers:
+iOS bundle `CharlieW.MyInventory`, Android package `com.suppliescheck`.
+
+1. **Project + Drive API** — New Project (e.g. `MyInventory Sync`) → APIs & Services →
+   Library → enable **Google Drive API**.
+2. **OAuth consent screen** — User Type **External**; fill app name + user-support email +
+   developer-contact email (logo / URLs optional); add **only** the `.../auth/drive.file`
+   scope; then **PUBLISH APP → Production**.
+   - Publishing to Production is **mandatory**: `drive.file` is non-sensitive, so this needs
+     **no Google review** and takes effect immediately, AND it is what stops refresh tokens
+     expiring on the 7-day *Testing*-status clock (§8.1). Confirmed against Google docs
+     (2026-06).
+   - Do **NOT** add `drive` / `drive.appdata` — those are sensitive/restricted and trigger
+     verification (CASA). Showing the app's name+logo on the consent screen needs a separate
+     lightweight *brand verification*; skipping it still works (plainer consent screen) and
+     is fine for single-user use.
+3. **OAuth client IDs** (APIs & Services → Credentials → Create OAuth client ID):
+   - **iOS** — type iOS, Bundle ID `CharlieW.MyInventory`. Record the **Client ID** and the
+     **reversed client ID** (`com.googleusercontent.apps.…`, used as the app's URL scheme).
+   - **Android** — type Android, package `com.suppliescheck`, plus the **SHA-1** of the
+     keystore that signs the *installed* apk (mismatch → `DEVELOPER_ERROR`). Debug builds:
+     `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass
+     android -keypass android | grep SHA1`; EAS builds: `eas credentials`.
+   - No **Web application** client is needed — the apps call Drive REST with on-device access
+     tokens.
+4. **Hand back** (all public, embeddable — no secrets): iOS Client ID + reversed client ID,
+   Android Client ID, and confirmation the Drive API is enabled and the consent screen is in
+   Production.
 
 ---
 
