@@ -128,10 +128,12 @@ final class SyncEngine {
         guard state != .signedOut else { return state }
         // Re-entrancy guard: the trigger policy (manual + foreground + debounced-dirty)
         // can fire overlapping syncs, and `syncOnce` suspends at every transport await.
-        // Coalesce — a sync already in flight will pick up any just-made edits on its
-        // next pass — so we never run two cycles against one store concurrently (which
-        // would double-push and race `lastPushedDigest`). Checked synchronously before
-        // the first await, so it is a reliable gate on the MainActor's serial executor.
+        // Coalesce so we never run two cycles against one store concurrently (which would
+        // double-push and race `lastPushedDigest`). Checked synchronously before the first
+        // await, so it is a reliable gate on the MainActor's serial executor. A coalesced
+        // trigger is dropped, NOT queued — but no edit is lost: any change made during an
+        // in-flight sync re-arms its own debounced `noteLocalChange` timer (and foreground/
+        // manual also re-trigger), so it's carried by the next pass, just deferred.
         guard state != .syncing else { return state }
         state = .syncing
         do {
