@@ -81,6 +81,27 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
 
+      # TEMPORARY diagnostic: the unit-test host has been crashing on the CI toolchain
+      # (Xcode 26.3) with a `malloc` double-free at a constant address that does NOT
+      # reproduce locally (Xcode 26.6). xcodebuild's log shows only the malloc line, not
+      # the backtrace — so on failure, surface the simulator crash report (`.ips`), which
+      # carries the symbolicated stack (which binary: MyInventory / libsodium / libswift /
+      # libmalloc). Remove once the root cause is fixed.
+      - name: Dump crash reports on failure
+        if: ${{ failure() }}
+        run: |
+          echo "=== DiagnosticReports (host) ==="
+          ls -lt "$HOME/Library/Logs/DiagnosticReports/" 2>/dev/null || true
+          shopt -s nullglob
+          for f in "$HOME"/Library/Logs/DiagnosticReports/MyInventory-*.ips "$HOME"/Library/Logs/DiagnosticReports/MyInventory_*.ips; do
+            echo "===== $f ====="
+            cat "$f" || true
+          done
+          echo "=== crashes inside the simulator container ==="
+          find "$HOME/Library/Developer/CoreSimulator/Devices" -name 'MyInventory*.ips' -o -name 'MyInventory*.crash' 2>/dev/null | while read -r f; do
+            echo "===== $f ====="; cat "$f" || true
+          done
+
   ui-tests:
     name: UI tests
     runs-on: macos-latest
