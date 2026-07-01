@@ -148,7 +148,8 @@ The one genuinely new UX flow (sign-in aside):
 1. **Sign in** (§8.1 of the main plan) → token in secure storage.
 2. **Establish the sync key** (§8) — first time, prompt once for the SCBK1 passphrase (or generate
    a fresh backup key + show the recovery key, exactly like S2's `EncryptedBackupSheet`); cache the
-   derived key in the Keychain / EncryptedSharedPreferences so later syncs are silent.
+   **passphrase / durable unlock secret** — *not* a salt-bound derived key (§8) — in the Keychain /
+   EncryptedSharedPreferences so later syncs are silent.
 3. **`resolveFile()`** — search Drive for the app's `inventory.scbk` (by `drive.file` visibility);
    if none, create it empty.
 4. **First `syncOnce()`** — empty remote → local is pushed as-is; non-empty remote (the *other*
@@ -218,19 +219,38 @@ plain UserDefaults/AsyncStorage:
 
 - **OAuth refresh/access token** (`drive.file` scope) → Keychain (iOS) / EncryptedSharedPreferences
   (Android). Managed by the `GoogleSignIn` SDK's own secure store where possible.
-- **Sync key** (the SCBK1 data key / passphrase-derived key) → Keychain / EncryptedSharedPreferences,
-  set once at first sync (§5.2). This is what lets background/foreground sync **decrypt without
-  re-prompting**. It is the E2EE root: it stays on-device, Google never sees it, and losing it (with
-  no recovery key) = unrecoverable — the same guarantee/warning as S2's manual backup.
+- **Sync unlock secret** — the SCBK1 **passphrase** (or the recovery key), **not** a salt-bound
+  derived key → Keychain / EncryptedSharedPreferences, set once at first sync (§5.2). This is what
+  lets background/foreground sync **decrypt without re-prompting**. It is the E2EE root: it stays
+  on-device, Google never sees it, and losing it (with no recovery key) = unrecoverable — the same
+  guarantee/warning as S2's manual backup.
+
+**Why the passphrase, not the derived key.** SCBK1 is envelope-salted: `deriveKek` mixes in the
+envelope's *own* random `salt`, and today `encryptBackup` mints a fresh salt on every export. So a
+KEK derived from one envelope's salt cannot unwrap a *different* envelope — the moment the peer (or
+this device's next push) writes a newly-salted file, a cached derived key is dead and silent sync
+breaks. Therefore we cache the **passphrase** and re-run `deriveKek` against **each pulled
+envelope's own salt** (SCBK1 already self-describes it), which always unwraps correctly.
+
+**Avoiding a KDF run on every sync.** Argon2 is deliberately expensive, so re-deriving on each pull
+would be wasteful. Fix: the Drive sync file uses a **stable salt** — generated once at first sync
+(or adopted from the seed `.scbk`) and **preserved across pushes**; each push still rotates the DEK
+and the AEAD nonce (fresh random), so every ciphertext is unique, but the passphrase→KEK derivation
+is stable and can be **memoized** (keyed by salt). Reusing one salt across a single user's own sync
+file is safe — salt defeats cross-user precomputation; the fresh per-push DEK+nonce preserve
+semantic security — and it stays a valid SCBK1 envelope, so the Drive file and a manual `.scbk`
+remain interchangeable. If a pulled envelope's salt ever differs from the cached one (e.g. the file
+was replaced by a manual import with its own salt), the memo misses and we re-derive from the stored
+passphrase — never a silent failure.
 
 **Decided: auto-sync reuses the S2 passphrase flow.** First sync prompts once for the SCBK1
-passphrase (or generates a fresh key + shows the recovery key, exactly like `EncryptedBackupSheet`);
-the derived key is then cached in the Keychain / EncryptedSharedPreferences so later
-foreground/background syncs decrypt silently. Rationale: one mental model — the manual `.scbk` and
-the auto-synced Drive file are the **same format and interchangeable**, so a user who already made a
-manual backup can point sync at it. Both devices are unlocked once with the same passphrase/recovery
-key. (Rejected: a device-independent auto-generated sync key surfaced only as a recovery key — it
-decouples from the manual backup passphrase but forces the user to track a second secret.)
+passphrase (or generates a fresh key + shows the recovery key, exactly like `EncryptedBackupSheet`)
+and stores **that passphrase** in secure storage. Rationale: one mental model — the manual `.scbk`
+and the auto-synced Drive file are the **same format and interchangeable**, so a user who already
+made a manual backup can point sync at it. Both devices are unlocked once with the same
+passphrase/recovery key. (Rejected: a device-independent auto-generated sync key surfaced only as a
+recovery key — it decouples from the manual backup passphrase but forces the user to track a second
+secret.)
 
 ---
 
@@ -244,6 +264,7 @@ decouples from the manual backup passphrase but forces the user to track a secon
 | Concurrent write (two devices) | `push` `Conflict` → re-pull + re-merge + retry (bounded); LWW converges |
 | Remote empty (first ever) | step 3 branch — push local as-is |
 | Remote undecryptable (wrong key) | `error(decryptFailed)` → prompt to re-enter passphrase for this file; **never** overwrite the remote blindly |
+| Pulled envelope salt ≠ cached salt (e.g. manual import replaced the file) | memoized KEK misses → re-derive KEK from the **stored passphrase** against the new salt (§8); decrypt succeeds, never a silent failure |
 | Corrupt/partial remote JSON | fail the pass, keep local, surface `error(driveError)`; do not push over it automatically |
 | Duplicate `inventory.scbk` files | §5 — merge into oldest, tombstone extras, log |
 | Drive quota / 5xx | bounded backoff retry, then `error(driveError)` |
