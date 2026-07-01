@@ -186,6 +186,13 @@ struct SettingsView: View {
             .onChange(of: settings.notificationFireHour) { _, _ in
                 rescheduleNotifications()   // re-add every pending request at the new hour
             }
+            .onChange(of: settings.settingsModifiedAt) { _, _ in
+                // Every synced-setting edit (lead time, reminder hour, default interval
+                // value/unit) bumps settingsModifiedAt. Regenerate the plain-backup temp
+                // file so "Export Unencrypted Copy…" never shares a pre-edit snapshot —
+                // its ShareLink points at the file made by prepareBackup().
+                prepareBackup()
+            }
             .alert("Export failed", isPresented: Binding(
                 get: { exportError != nil },
                 set: { if !$0 { exportError = nil } }

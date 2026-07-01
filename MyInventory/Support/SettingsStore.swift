@@ -93,38 +93,64 @@ final class SettingsStore {
     /// modified timestamp; flipped true once construction finishes.
     private var isReady = false
 
-    init(defaults: UserDefaults = .standard) {
+    /// Persisted keys whose mere presence means the user configured a SYNCED setting
+    /// on a prior version — each is written only by an actual edit (`didSet`) or by
+    /// the legacy migration, never by `register(defaults:)`. Read BEFORE registering
+    /// fallbacks, which would otherwise mask a never-written key with its default.
+    private static let syncedSettingKeys = [
+        Key.defaultIntervalMonths,   // legacy months-only default (pre value+unit)
+        Key.globalLeadTimeDays,
+        Key.notificationFireHour,
+        Key.defaultIntervalValue,
+        Key.defaultIntervalUnit
+    ]
+
+    init(defaults: UserDefaults = .standard, now: Date = .now) {
         self.defaults = defaults
+
+        // Decide the synced-settings LWW baseline from the PERSISTED domain only. This
+        // store loads every field with an explicit fallback instead of
+        // `register(defaults:)`, precisely so `object(forKey:)` never returns a shared
+        // registration-domain default — a non-nil persisted key is then unambiguously
+        // one the user configured (the registration domain is process-global and leaks
+        // across every UserDefaults suite, which would make this detection always true).
+        //
+        // A stored `settingsModifiedAt` always wins. Otherwise: an UPGRADE that already
+        // carries a user-configured synced setting must win LWW over a brand-new peer,
+        // so it's stamped with the upgrade moment (`now`) and persisted; a truly fresh
+        // install keeps the epoch baseline, so its untouched defaults never clobber an
+        // edited peer.
+        let storedModifiedAt = defaults.object(forKey: Key.settingsModifiedAt) as? Date
+        let hasPriorSyncedSettings = Self.syncedSettingKeys.contains {
+            defaults.object(forKey: $0) != nil
+        }
 
         // One-time migration of the legacy months-only default into value+unit. The
         // legacy key only exists on an upgrade and is removed here, so it and the
         // value+unit keys never coexist — migrating unconditionally on its presence
-        // is safe (and avoids depending on a registration-domain fallback masking
-        // "never written" as 0).
+        // is safe.
         if let legacyMonths = defaults.object(forKey: Key.defaultIntervalMonths) as? Int {
             defaults.set(legacyMonths, forKey: Key.defaultIntervalValue)
             defaults.set(IntervalUnit.months.rawValue, forKey: Key.defaultIntervalUnit)
             defaults.removeObject(forKey: Key.defaultIntervalMonths)
         }
 
-        // Register sensible defaults the first time.
-        defaults.register(defaults: [
-            Key.globalLeadTimeDays: 7,
-            Key.defaultIntervalValue: 0,
-            Key.defaultIntervalUnit: IntervalUnit.months.rawValue,
-            Key.notificationsRequested: false,
-            Key.notificationFireHour: 9,
-            Key.hasCompletedOnboarding: false
-        ])
-        self.globalLeadTimeDays = defaults.integer(forKey: Key.globalLeadTimeDays)
-        self.defaultIntervalValue = defaults.integer(forKey: Key.defaultIntervalValue)
+        // Load each field with its default inline (no shared registration domain).
+        self.globalLeadTimeDays = (defaults.object(forKey: Key.globalLeadTimeDays) as? Int) ?? 7
+        self.defaultIntervalValue = (defaults.object(forKey: Key.defaultIntervalValue) as? Int) ?? 0
         self.defaultIntervalUnit = defaults.string(forKey: Key.defaultIntervalUnit)
             ?? IntervalUnit.months.rawValue
-        self.settingsModifiedAt = defaults.object(forKey: Key.settingsModifiedAt) as? Date
-            ?? Self.epoch
+        self.settingsModifiedAt = storedModifiedAt ?? (hasPriorSyncedSettings ? now : Self.epoch)
         self.notificationsRequested = defaults.bool(forKey: Key.notificationsRequested)
-        self.notificationFireHour = defaults.integer(forKey: Key.notificationFireHour)
+        self.notificationFireHour = (defaults.object(forKey: Key.notificationFireHour) as? Int) ?? 9
         self.hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding)
+
+        // Persist a synthesized upgrade baseline (didSet doesn't fire during init) so
+        // it's stable across launches. The epoch baseline is intentionally left unstored
+        // so the first real edit is what first writes a timestamp.
+        if storedModifiedAt == nil && hasPriorSyncedSettings {
+            defaults.set(self.settingsModifiedAt, forKey: Key.settingsModifiedAt)
+        }
 
         isReady = true
     }

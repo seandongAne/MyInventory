@@ -98,4 +98,45 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(second.defaultIntervalValue, 3)
         XCTAssertEqual(second.defaultIntervalUnitValue, .years)
     }
+
+    // MARK: Upgrade seeds a real LWW baseline (not epoch)
+
+    /// A fresh install keeps the epoch baseline (so its untouched defaults never win
+    /// LWW over an edited peer), and doesn't pre-write a timestamp.
+    func testFreshInstallKeepsEpochBaseline() {
+        let defaults = freshDefaults()
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertEqual(store.settingsModifiedAt, SettingsStore.epoch)
+        XCTAssertNil(defaults.object(forKey: "settingsModifiedAt"))
+    }
+
+    /// An UPGRADE that already carries a user-configured synced setting but no stored
+    /// `settingsModifiedAt` must stamp the upgrade moment (not epoch) and persist it —
+    /// otherwise its export ties a fresh peer at the epoch and never syncs.
+    func testUpgradeWithExistingSettingStampsBaselineAndPersists() {
+        let defaults = freshDefaults()
+        defaults.set(30, forKey: "globalLeadTimeDays")   // pre-value+unit install, edited
+        let stamp = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let store = SettingsStore(defaults: defaults, now: stamp)
+
+        XCTAssertEqual(store.settingsModifiedAt, stamp)
+        XCTAssertGreaterThan(store.settingsModifiedAt, SettingsStore.epoch)
+        // Persisted, so a later launch reads the same baseline instead of re-stamping.
+        XCTAssertEqual(defaults.object(forKey: "settingsModifiedAt") as? Date, stamp)
+        let reloaded = SettingsStore(defaults: defaults, now: Date(timeIntervalSince1970: 1_900_000_000))
+        XCTAssertEqual(reloaded.settingsModifiedAt, stamp)
+    }
+
+    /// The legacy-months upgrade path also seeds a non-epoch baseline.
+    func testLegacyMonthsUpgradeStampsBaseline() {
+        let defaults = freshDefaults()
+        defaults.set(6, forKey: "defaultIntervalMonths")
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let store = SettingsStore(defaults: defaults, now: stamp)
+
+        XCTAssertEqual(store.defaultIntervalValue, 6)
+        XCTAssertEqual(store.settingsModifiedAt, stamp)
+    }
 }
