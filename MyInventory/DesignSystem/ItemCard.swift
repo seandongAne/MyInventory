@@ -107,8 +107,11 @@ struct ItemCard: View {
 
     @ViewBuilder private var thumbnail: some View {
         // Downsampled + cached — never decode the full stored image per card per render.
+        // Key = uuid + content fingerprint: a replaced photo (even one with the SAME
+        // byte count) must miss the cache instead of serving the old thumbnail.
         if let data = item.photo,
-           let ui = Thumbnailer.thumbnail(for: data, cacheKey: "\(item.uuid.uuidString)-\(data.count)") {
+           let ui = Thumbnailer.thumbnail(for: data,
+                                          cacheKey: "\(item.uuid.uuidString)-\(Thumbnailer.contentFingerprint(data))") {
             Image(uiImage: ui)
                 .resizable()
                 .scaledToFill()

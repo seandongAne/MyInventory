@@ -46,6 +46,10 @@ struct PresetValuePicker: View {
         )
     }
 
+    /// Mirrors the menu getter: whenever the row reads "Custom…" the stepper must be
+    /// on screen, or a non-preset value is shown nowhere and can't be adjusted.
+    private var showsCustomStepper: Bool { isCustom || !presets.contains(value) }
+
     var body: some View {
         Group {
             Picker(label, selection: selection) {
@@ -59,8 +63,15 @@ struct PresetValuePicker: View {
                 // a non-preset value — flip to custom so the picker doesn't lie.
                 if !presets.contains(newValue) { isCustom = true }
             }
+            .onChange(of: presets) { _, newPresets in
+                // Both call sites key presets off a unit picker, so presets can
+                // change UNDER a constant value (e.g. 12 months → the years presets
+                // [1,2,3,5]) — latch custom mode so the stepper stays put even if
+                // the user later steps across a preset value.
+                if !newPresets.contains(value) { isCustom = true }
+            }
 
-            if isCustom {
+            if showsCustomStepper {
                 Stepper(value: $value, in: range) {
                     LabeledContent("Custom", value: format(value))
                 }

@@ -218,6 +218,34 @@ final class BackupCryptoTests: XCTestCase {
         }
     }
 
+    // A structurally-damaged WRAP box must report `.corrupted`, never "wrong
+    // passphrase/recovery key": the secret in these tests is CORRECT, and the
+    // pre-fix remap told the user to retry a file that can never open.
+
+    func testShortWrapNonceWithCorrectPassphraseReportsCorrupted() throws {
+        var env = try BackupCrypto.parseEnvelope(Data(sampleScbk.utf8))
+        env.wrap.passphrase.nonce = BackupCrypto.base64([1, 2, 3])   // 3 bytes, not 24
+        XCTAssertThrowsError(try BackupCrypto.decryptWithPassphrase(env, passphrase: passphrase)) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
+    func testShortWrapCiphertextWithCorrectPassphraseReportsCorrupted() throws {
+        var env = try BackupCrypto.parseEnvelope(Data(sampleScbk.utf8))
+        env.wrap.passphrase.ciphertext = BackupCrypto.base64([1, 2, 3])   // < 16-byte tag
+        XCTAssertThrowsError(try BackupCrypto.decryptWithPassphrase(env, passphrase: passphrase)) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
+    func testShortWrapNonceWithCorrectRecoveryKeyReportsCorrupted() throws {
+        var env = try BackupCrypto.parseEnvelope(Data(sampleScbk.utf8))
+        env.wrap.recovery.nonce = BackupCrypto.base64([1, 2, 3])
+        XCTAssertThrowsError(try BackupCrypto.decryptWithRecoveryKey(env, recoveryKey: recoveryKeyString)) {
+            XCTAssertEqual($0 as? BackupCrypto.CryptoError, .corrupted)
+        }
+    }
+
     // MARK: Full round-trip with fresh (random) material
 
     func testRoundTripWithFreshMaterial() throws {

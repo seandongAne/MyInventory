@@ -298,4 +298,25 @@ final class SoftDeleteMergeTests: XCTestCase {
         item.category = nil                                 // no parent at all — not a tombstone case
         XCTAssertFalse(item.hasTombstonedAncestor)
     }
+
+    /// The Siri/Shortcuts entity query applies the same rule as search, attention,
+    /// and the notification planners: tombstoned items are excluded by the
+    /// predicate, and a live item under a tombstoned parent (merge orphan) is
+    /// filtered in memory — otherwise "Mark a supply as checked" offers items
+    /// invisible everywhere in-app and logs checks the user can never see.
+    func testIntentItemQueryExcludesTombstonesAndMergeOrphans() throws {
+        let store = try makeStore()
+        let context = SupplyContext(name: "Ctx"); store.insert(context)
+        let liveCat = SupplyCategory(name: "Live"); liveCat.context = context; store.insert(liveCat)
+        let deadCat = SupplyCategory(name: "Dead"); deadCat.context = context; store.insert(deadCat)
+
+        let live = SupplyItem(name: "Water"); live.category = liveCat; store.insert(live)
+        let tombstoned = SupplyItem(name: "Rope"); tombstoned.category = liveCat; store.insert(tombstoned)
+        tombstoned.deletedAt = t2
+        let orphan = SupplyItem(name: "Torch"); orphan.category = deadCat; store.insert(orphan)
+        deadCat.deletedAt = t2
+        try store.save()
+
+        XCTAssertEqual(try SupplyItemEntityQuery.liveItems(in: store).map(\.name), ["Water"])
+    }
 }

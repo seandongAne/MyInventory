@@ -58,10 +58,20 @@ struct SupplyItemEntityQuery: EntityStringQuery {
     @MainActor
     private func fetchItems() throws -> [SupplyItem] {
         guard case .success(let container) = AppModelContainer.shared else { return [] }
-        return try container.mainContext.fetch(
+        return try Self.liveItems(in: container.mainContext)
+    }
+
+    /// Every item the user can actually see: tombstones excluded by the predicate,
+    /// merge-orphans under a tombstoned parent filtered in memory (same rule as
+    /// search, attention, and the notification planners — `hasTombstonedAncestor`
+    /// is computed, so it can't go in the #Predicate). Without the second filter
+    /// Siri/Shortcuts offers ghost items and logs checks the user can never see.
+    @MainActor
+    static func liveItems(in modelContext: ModelContext) throws -> [SupplyItem] {
+        try modelContext.fetch(
             FetchDescriptor<SupplyItem>(predicate: #Predicate { $0.deletedAt == nil },
                                         sortBy: [SortDescriptor(\.name)])
-        )
+        ).filter { !$0.hasTombstonedAncestor }
     }
 }
 
