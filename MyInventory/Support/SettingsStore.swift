@@ -154,13 +154,18 @@ final class SettingsStore {
         }
 
         // Load each field with its default inline (no shared registration domain).
-        self.globalLeadTimeDays = (defaults.object(forKey: Key.globalLeadTimeDays) as? Int) ?? 7
-        self.defaultIntervalValue = (defaults.object(forKey: Key.defaultIntervalValue) as? Int) ?? 0
+        // Clamped like the import path — a synced peer or an older build may have
+        // persisted out-of-range values.
+        self.globalLeadTimeDays = Self.clampLeadTime(
+            (defaults.object(forKey: Key.globalLeadTimeDays) as? Int) ?? 7)
+        self.defaultIntervalValue = Self.clampIntervalValue(
+            (defaults.object(forKey: Key.defaultIntervalValue) as? Int) ?? 0)
         self.defaultIntervalUnit = defaults.string(forKey: Key.defaultIntervalUnit)
             ?? IntervalUnit.months.rawValue
         self.settingsModifiedAt = storedModifiedAt ?? (hasPriorSyncedSettings ? now : Self.epoch)
         self.notificationsRequested = defaults.bool(forKey: Key.notificationsRequested)
-        self.notificationFireHour = (defaults.object(forKey: Key.notificationFireHour) as? Int) ?? 9
+        self.notificationFireHour = Self.clampFireHour(
+            (defaults.object(forKey: Key.notificationFireHour) as? Int) ?? 9)
         self.hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding)
 
         // Persist a synthesized upgrade baseline (didSet doesn't fire during init) so
@@ -200,21 +205,37 @@ final class SettingsStore {
     /// instant (NOT now, so a later export carries the winning timestamp). The
     /// field setters above each bump the timestamp to now; the trailing explicit
     /// assignment overrides that back to the incoming value. `value` uses 0 for the
-    /// wire's null ("no default").
+    /// wire's null ("no default"). The wire is untrusted (another platform / an old
+    /// build), so every value is clamped to its valid range on adoption.
     func applyMergedSettings(globalLeadTimeDays: Int,
                              defaultIntervalValue: Int,
                              defaultIntervalUnit: String,
                              notificationFireHour: Int,
                              modifiedAt: Date) {
-        self.globalLeadTimeDays = globalLeadTimeDays
-        self.defaultIntervalValue = defaultIntervalValue
+        self.globalLeadTimeDays = Self.clampLeadTime(globalLeadTimeDays)
+        self.defaultIntervalValue = Self.clampIntervalValue(defaultIntervalValue)
         self.defaultIntervalUnit = defaultIntervalUnit
-        self.notificationFireHour = notificationFireHour
+        self.notificationFireHour = Self.clampFireHour(notificationFireHour)
         self.settingsModifiedAt = modifiedAt
     }
 
+    // MARK: Range guards
+    // Synced settings cross the wire from other devices, so clamp at every boundary
+    // where a value enters the store (import + persisted load). Out-of-range values
+    // are not cosmetic: a fireHour like -999 arms past-dated non-repeating triggers
+    // (every reminder silently never fires), and a negative lead window disables
+    // due-soon status and lead reminders.
+    private static func clampLeadTime(_ days: Int) -> Int { max(0, days) }
+    private static func clampIntervalValue(_ value: Int) -> Int { max(0, value) }
+    private static func clampFireHour(_ hour: Int) -> Int { min(max(hour, 0), 23) }
+
+    /// Monotonic: never moves the timestamp backwards. After LWW adopts a peer's
+    /// future-dated `settingsModifiedAt` (clock skew), a plain `.now` stamp would be
+    /// OLDER than the adopted instant, so re-merging the same blob would silently
+    /// revert this edit until the wall clock caught up. The +1s step (not sub-second)
+    /// keeps the bump visible on the whole-second ISO-8601 wire.
     private func bumpSettingsModified(now: Date = .now) {
         guard isReady else { return }
-        settingsModifiedAt = now
+        settingsModifiedAt = max(now, settingsModifiedAt.addingTimeInterval(1))
     }
 }

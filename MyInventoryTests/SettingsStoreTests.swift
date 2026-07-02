@@ -98,6 +98,40 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(second.defaultIntervalUnitValue, .years)
     }
 
+    // MARK: Monotonic modifiedAt (clock-skew hardening)
+
+    /// After adopting a peer's future-dated `settingsModifiedAt` via LWW, a local
+    /// edit must stamp STRICTLY NEWER than the adopted instant — a plain `.now`
+    /// would be older, so the peer's blob would revert the edit on every re-merge.
+    func testEditAfterAdoptingFutureTimestampStaysStrictlyNewer() {
+        let store = SettingsStore(defaults: freshDefaults())
+        let future = Date.now.addingTimeInterval(60 * 60 * 24 * 365)
+        store.applyMergedSettings(globalLeadTimeDays: 30, defaultIntervalValue: 2,
+                                  defaultIntervalUnit: "years", notificationFireHour: 8,
+                                  modifiedAt: future)
+
+        store.globalLeadTimeDays = 10
+
+        XCTAssertGreaterThan(store.settingsModifiedAt, future)
+    }
+
+    // MARK: Range guards on load
+
+    /// Out-of-range PERSISTED values (a synced peer or an older build may have
+    /// written them) are clamped on load, mirroring the import-time clamp.
+    func testPersistedOutOfRangeValuesAreClampedOnLoad() {
+        let defaults = freshDefaults()
+        defaults.set(-999, forKey: "notificationFireHour")
+        defaults.set(-30, forKey: "globalLeadTimeDays")
+        defaults.set(-5, forKey: "defaultIntervalValue")
+
+        let store = SettingsStore(defaults: defaults)
+
+        XCTAssertEqual(store.notificationFireHour, 0)
+        XCTAssertEqual(store.globalLeadTimeDays, 0)
+        XCTAssertEqual(store.defaultIntervalValue, 0)
+    }
+
     // MARK: Upgrade seeds a real LWW baseline (not epoch)
 
     /// A fresh install keeps the epoch baseline (so its untouched defaults never win

@@ -81,6 +81,14 @@ final class FakeSyncTransport: SyncTransport {
     var currentBytes: Data? { stored?.bytes }
     var currentVersion: SyncVersion? { stored?.version }
 
+    /// Simulate another device replacing the remote blob OUT-OF-BAND between our
+    /// syncs (no conflict thrown at us — the write simply lands and bumps the
+    /// version, exactly like a Phase-1 peer blindly overwriting the file).
+    func overwriteRemote(bytes: Data) {
+        counter += 1
+        stored = Stored(bytes: bytes, version: String(counter))
+    }
+
     func resolveFile() async throws -> ResolvedRemoteFile {
         resolveCount += 1
         if let failure = failResolve { failResolve = nil; throw failure }

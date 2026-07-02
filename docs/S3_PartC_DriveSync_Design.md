@@ -98,17 +98,18 @@ One `syncOnce()` pass, driven by the engine, reusing the done crypto + merge:
 2. pull(fileId)                       → remoteCipher, remoteVersion
 3. if remoteCipher == null:           // remote empty (first push ever)
       merged = localExport            // nothing to merge in
+      remoteDigest = null
    else:
       remoteJson = decrypt(remoteCipher, syncKey)     // reuse S2 crypto
+      remoteDigest = contentDigest(remoteJson)        // STABLE — excludes exportedAt (§4.1)
       merge(remoteJson → local store)                 // reuse Part A/B LWW+tombstone+settings
       merged     = export(local store)                // reuse assembleExport
-4. digest = contentDigest(merged)                     // STABLE — excludes exportedAt (§4.1)
-   localChanged = (digest != lastPushedDigest) || remoteCipher == null
-   if !localChanged: DONE (already converged — pull-only, no upload)
+4. digest = contentDigest(merged)
+   if digest == remoteDigest: DONE (converged with the remote — pull-only, no upload)
 5. cipher = encrypt(merged, syncKey)                  // reuse S2 crypto
 6. push(fileId, cipher, expectedVersion = remoteVersion)
       on Conflict → goto 2 (bounded retries, e.g. 5)
-7. record lastPushedDigest + lastSyncedAt; DONE
+7. record lastSyncedAt; DONE
 ```
 
 ### 4.1 Change detection must ignore volatile metadata
@@ -124,9 +125,13 @@ So step 4 compares a **stable content digest**, not the raw serialized export:
   `deletedAt`, checks, the settings singleton — stays in, so any *real* change flips the digest.
 - We never diff **ciphertext**: SCBK1 uses a fresh random nonce per encryption, so two encryptions
   of identical plaintext differ anyway. Change detection is always on the *plaintext* digest.
-- `lastPushedDigest` is persisted per-device (alongside `lastSyncedAt`); on a cold start with an
-  unknown digest we simply treat local as possibly-changed and let the `expectedVersion` guard +
-  LWW merge keep the upload safe and idempotent.
+- Step 4 compares against the **just-pulled REMOTE's** digest — never a remembered
+  "what I last pushed" digest. The two differ exactly when the remote regressed out-of-band
+  (e.g. a Phase-1 additive peer blindly overwriting the blob with stale data): local hasn't
+  changed since our last push, but the remote no longer matches it. Comparing to the remote
+  digest re-pushes the corrective state; comparing to a last-pushed digest would skip the
+  upload and leave the regression standing until the next local edit (and a fresh device's
+  first pull would adopt the stale blob). No per-device digest state needs persisting.
 
 Properties this gives us **for free** from the already-shipped pieces:
 - **Idempotent** — re-running with no changes on either side uploads nothing (step 4 short-circuit)
@@ -209,6 +214,13 @@ When `syncOnce()` runs. Conservative, battery-friendly, no server push:
 Acceptable for one owner's two devices; if a device's clock is badly wrong, a stale edit could win.
 Not worth a vector clock here — but note it, and prefer the *device's own* `now` (not the remote's)
 when stamping local edits, so a skewed remote can't poison future local writes.
+**Hardening (both platforms):** stamping a local edit must be *monotonic per row* —
+`modifiedAt = max(now, modifiedAt + 1s)` (likewise the settings singleton's
+`settingsModifiedAt`). After a merge adopts a peer's FUTURE-dated `modifiedAt`, a plain `now`
+stamp would be older than the adopted instant, so re-merging the same data would silently revert
+the local edit on every pass until the wall clock caught up. The step is a whole second because
+the wire's ISO-8601 timestamps are second-precision. Incoming *settings values* are also range-
+clamped on adoption (fireHour 0–23, lead ≥ 0, default interval ≥ 0) — the wire is untrusted.
 
 ---
 
