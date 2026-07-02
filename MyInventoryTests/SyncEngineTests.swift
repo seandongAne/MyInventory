@@ -66,9 +66,11 @@ final class SyncEngineTests: XCTestCase {
 
     private func engine(_ transport: SyncTransport, _ ctx: ModelContext,
                         cipher: SyncCipher = PassthroughCipher(),
-                        signedIn: Bool = true) -> SyncEngine {
+                        signedIn: Bool = true,
+                        changeDebounce: Duration = .seconds(15)) -> SyncEngine {
         SyncEngine(transport: transport, cipher: cipher, modelContext: ctx,
-                   settings: nil, signedIn: signedIn, now: { self.fixedNow })
+                   settings: nil, signedIn: signedIn, changeDebounce: changeDebounce,
+                   now: { self.fixedNow })
     }
 
     // MARK: First sync
@@ -369,6 +371,139 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertNil(sut.pendingChangeTask, "no dirty timer while signed out")
     }
 
+    // MARK: didSave choke point (design §7 "after local edits")
+
+    func testMainContextSavesArmAndCoalesceTheDebouncedSync() async throws {
+        let ctx = try makeStore()
+        let transport = FakeSyncTransport()
+        let sut = engine(transport, ctx, changeDebounce: .milliseconds(20))
+
+        // Two saves in one burst — the observer must arm the timer and re-arm it,
+        // producing ONE sync that carries both edits (no explicit noteLocalChange call).
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        try seedItem(into: ctx, name: "Radio", modified: t1)
+
+        let timer = try XCTUnwrap(sut.pendingChangeTask, "a main-context save must arm the debounced sync")
+        await timer.value
+
+        XCTAssertEqual(transport.pushCount, 1, "a burst of saves coalesces into one push")
+        let remote = try DataImporter.decode(XCTUnwrap(transport.currentBytes))
+        let names = Set(remote.contexts.flatMap(\.categories).flatMap(\.items).map(\.name))
+        XCTAssertEqual(names, ["Water", "Radio"])
+    }
+
+    func testMainContextSaveWhileSignedOutDoesNotArmSync() async throws {
+        let ctx = try makeStore()
+        let sut = engine(FakeSyncTransport(), ctx, signedIn: false, changeDebounce: .milliseconds(20))
+
+        try seedItem(into: ctx, name: "Water", modified: t1)
+
+        XCTAssertNil(sut.pendingChangeTask, "no dirty timer while signed out")
+    }
+
+    func testEngineOwnMergeSaveDoesNotRetriggerSync() async throws {
+        let transport = FakeSyncTransport(initialBytes: try remoteBlob(itemName: "Radio", modified: t1))
+        let local = try makeStore()
+        let sut = engine(transport, local, changeDebounce: .milliseconds(20))
+
+        _ = await sut.syncOnce()   // pulls + merges Radio → a real save on our context
+
+        XCTAssertTrue(try liveItemNames(in: local).contains("Radio"))
+        XCTAssertNil(sut.pendingChangeTask, "the cycle's own merge save must not arm another sync")
+    }
+
+    // MARK: Trigger during an in-flight sync → one follow-up pass
+
+    func testEditDuringInFlightSyncRunsFollowUpPush() async throws {
+        let local = try makeStore()
+        try seedItem(into: local, name: "Water", modified: t1)
+        let fake = FakeSyncTransport()
+        let gated = GatedTransport(fake, parkAt: .push)   // park AFTER the export was taken
+        let sut = engine(gated, local, changeDebounce: .milliseconds(20))
+
+        async let first = sut.syncOnce()
+        await gated.awaitParked()
+
+        // An edit lands while the cycle is mid-upload: its export predates the edit,
+        // so without the follow-up this change would stay unpushed until the next
+        // foreground/manual trigger.
+        try seedItem(into: local, name: "Radio", modified: t2)
+        await sut.pendingChangeTask?.value   // debounce fires into the re-entrancy guard
+
+        await gated.release()
+        let final = await first
+
+        XCTAssertEqual(final, .synced(fixedNow))
+        XCTAssertEqual(fake.pushCount, 2, "the coalesced trigger must run one follow-up pass")
+        let remote = try DataImporter.decode(XCTUnwrap(fake.currentBytes))
+        let names = Set(remote.contexts.flatMap(\.categories).flatMap(\.items).map(\.name))
+        XCTAssertEqual(names, ["Water", "Radio"], "the follow-up carries the mid-flight edit")
+    }
+
+    // MARK: Sign-in from expired auth
+
+    func testSignInRecoversFromAuthExpiredError() async throws {
+        let ctx = try makeStore()
+        let transport = FakeSyncTransport()
+        transport.failResolve = .authExpired
+        let sut = engine(transport, ctx)
+
+        _ = await sut.syncOnce()
+        XCTAssertEqual(sut.state, .error(.authExpired))
+
+        sut.signIn()   // the "Sign in again" button in SyncStatusSection
+
+        XCTAssertEqual(sut.state, .idle)
+    }
+
+    func testSignInLeavesOtherErrorStatesAlone() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()
+        transport.failNextPull = .offline
+        let sut = engine(transport, ctx)
+
+        _ = await sut.syncOnce()
+        XCTAssertEqual(sut.state, .error(.offline))
+
+        sut.signIn()
+
+        XCTAssertEqual(sut.state, .error(.offline), "signIn only recovers authExpired")
+    }
+
+    // MARK: Sign-out fences an in-flight sync
+
+    func testSignOutDuringInFlightSyncCancelsAndStaysSignedOut() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let fake = FakeSyncTransport()
+        let gated = GatedTransport(fake)   // parks at resolve
+        let sut = engine(gated, ctx)
+
+        async let first = sut.syncOnce()
+        await gated.awaitParked()
+
+        _ = await sut.syncOnce()   // queue a follow-up too — it must die with the sign-out
+        sut.signOut()
+        XCTAssertEqual(sut.state, .signedOut)
+
+        await gated.release()
+        let result = await first
+
+        XCTAssertEqual(result, .signedOut, "the completing cycle must not write a signed-in state")
+        XCTAssertEqual(sut.state, .signedOut)
+        XCTAssertNil(sut.lastSyncedAt)
+        XCTAssertEqual(fake.pullCount, 0, "the cancelled pass stops at the first fence")
+        XCTAssertEqual(fake.pushCount, 0, "the cancelled pass must not touch the remote")
+        XCTAssertEqual(fake.resolveCount, 1, "the queued follow-up must not run after sign-out")
+
+        // A fresh sign-in starts clean and syncs normally.
+        sut.signIn()
+        let after = await sut.syncNow()
+        XCTAssertEqual(after, .synced(fixedNow))
+        XCTAssertEqual(fake.pushCount, 1)
+    }
+
     // MARK: Content digest
 
     func testContentDigestIgnoresExportedAtButTracksContent() async throws {
@@ -431,18 +566,25 @@ private struct ThrowingDecryptCipher: SyncCipher {
     func decrypt(_ ciphertext: Data) throws -> Data { throw Boom() }
 }
 
-/// Wraps a `FakeSyncTransport` and PARKS the first `resolveFile` at a gate until
-/// `release()` — lets a test hold one sync genuinely in-flight (the in-memory fake
-/// otherwise never suspends) and fire a second concurrent trigger to prove the
-/// engine's re-entrancy guard. `awaitParked()` is order-independent (returns
-/// immediately if the gate was already reached).
+/// Wraps a `FakeSyncTransport` and PARKS the first call at the chosen point (the
+/// first `resolveFile`, or the first `push` — i.e. after the engine took its export)
+/// at a gate until `release()` — lets a test hold one sync genuinely in-flight (the
+/// in-memory fake otherwise never suspends) and interleave triggers/sign-out to prove
+/// the engine's re-entrancy, follow-up, and cancellation behavior. `awaitParked()` is
+/// order-independent (returns immediately if the gate was already reached).
 private actor GatedTransport: SyncTransport {
+    enum ParkPoint { case resolve, push }
+
     private let inner: FakeSyncTransport
+    private let parkAt: ParkPoint
     private var gate: CheckedContinuation<Void, Never>?
     private var reached: CheckedContinuation<Void, Never>?
     private var didReach = false
 
-    init(_ inner: FakeSyncTransport) { self.inner = inner }
+    init(_ inner: FakeSyncTransport, parkAt: ParkPoint = .resolve) {
+        self.inner = inner
+        self.parkAt = parkAt
+    }
 
     func awaitParked() async {
         if didReach { return }
@@ -451,12 +593,15 @@ private actor GatedTransport: SyncTransport {
 
     func release() { gate?.resume(); gate = nil }
 
+    private func parkOnce() async {
+        if didReach { return }
+        didReach = true
+        reached?.resume(); reached = nil
+        await withCheckedContinuation { gate = $0 }
+    }
+
     func resolveFile() async throws -> ResolvedRemoteFile {
-        if !didReach {
-            didReach = true
-            reached?.resume(); reached = nil
-            await withCheckedContinuation { gate = $0 }
-        }
+        if parkAt == .resolve { await parkOnce() }
         return try await inner.resolveFile()
     }
 
@@ -465,6 +610,7 @@ private actor GatedTransport: SyncTransport {
     }
 
     func push(fileId: String, bytes: Data, expectedVersion: SyncVersion?) async throws -> PushOutcome {
-        try await inner.push(fileId: fileId, bytes: bytes, expectedVersion: expectedVersion)
+        if parkAt == .push { await parkOnce() }
+        return try await inner.push(fileId: fileId, bytes: bytes, expectedVersion: expectedVersion)
     }
 }

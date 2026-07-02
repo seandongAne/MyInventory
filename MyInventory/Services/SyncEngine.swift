@@ -3,8 +3,10 @@
 //  MyInventory
 //
 //  The orchestrator for S3 Part C (Google Drive auto-sync). It owns the sync cycle,
-//  the observable `SyncState` the UI renders, and (later) the trigger policy. It holds
-//  NO Google code — everything remote goes through `SyncTransport`, and everything
+//  the observable `SyncState` the UI renders, and the trigger policy (§7): manual,
+//  foreground-if-stale, and the debounced after-local-edits trigger, which is armed
+//  automatically from the main context's `didSave` (see init). It holds NO Google
+//  code — everything remote goes through `SyncTransport`, and everything
 //  cryptographic through `SyncCipher`. See docs/S3_PartC_DriveSync_Design.md §2/§4/§6.
 //
 //  The cycle reuses the already-shipped pieces verbatim:
@@ -98,20 +100,69 @@ final class SyncEngine {
     private let maxConflictRetries: Int
     private let now: () -> Date
 
+    /// Set when a trigger fires while a cycle is already in flight. That cycle's export
+    /// may have been taken BEFORE the edit that fired us, so dropping the trigger would
+    /// strand the edit until the next foreground/manual sync — instead the completing
+    /// pass runs exactly one follow-up `syncOnce()`.
+    private var followUpRequested = false
+
+    /// The in-flight sync pass. `signOut()` cancels it so a mid-flight cycle can never
+    /// write a signed-in `.synced`/`.error` state after the user signed out.
+    private var inFlightSync: Task<Void, Never>?
+
+    /// True only while `runCycle` synchronously applies the remote merge — that
+    /// `modelContext.save()` posts `didSave` like any user edit, but it is the cycle's
+    /// own write, so the change observer must not re-arm a sync for it.
+    private var isApplyingRemoteMerge = false
+
+    /// Debounce used when the `didSave` observer arms `noteLocalChange` (design §7's
+    /// "10–30 s idle"). Injectable so tests don't sleep 15 real seconds.
+    private let changeDebounce: Duration
+
+    /// `ModelContext.didSave` observation token. `nonisolated(unsafe)`: written once at
+    /// the end of init, read only by the nonisolated deinit for removal.
+    nonisolated(unsafe) private var saveObserver: (any NSObjectProtocol)?
+
     init(transport: SyncTransport,
          cipher: SyncCipher,
          modelContext: ModelContext,
          settings: SettingsStore?,
          signedIn: Bool = true,
          maxConflictRetries: Int = 5,
+         changeDebounce: Duration = .seconds(15),
          now: @escaping () -> Date = { .now }) {
         self.transport = transport
         self.cipher = cipher
         self.modelContext = modelContext
         self.settings = settings
         self.maxConflictRetries = maxConflictRetries
+        self.changeDebounce = changeDebounce
         self.now = now
         self.state = signedIn ? .idle : .signedOut
+
+        // Trigger choke point (design §7 "after local edits": any mutation that bumps
+        // `modifiedAt` marks the store dirty). Every user-facing mutation path saves
+        // THIS main context — views, the notification "Mark as Checked" action, App
+        // Intents, template apply, and backup restore — so its `didSave` is exactly
+        // that dirty signal, with no per-call-site wiring to forget. Delivery is
+        // synchronous on the posting (main) thread, so `assumeIsolated` is sound and
+        // the `isApplyingRemoteMerge` window cannot race. A future save path that uses
+        // its OWN ModelContext must call `noteLocalChange()` itself.
+        saveObserver = NotificationCenter.default.addObserver(
+            forName: ModelContext.didSave, object: modelContext, queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isApplyingRemoteMerge else { return }
+                self.noteLocalChange()
+            }
+        }
+    }
+
+    /// Nonisolated for the same runtime reason as `FakeSyncTransport`/`SettingsStore`
+    /// (the iOS 26.2 simulator isolated-deinit double-free); it only removes the
+    /// thread-safe NotificationCenter token.
+    nonisolated deinit {
+        if let saveObserver { NotificationCenter.default.removeObserver(saveObserver) }
     }
 
     /// Run one full sync pass. Idempotent, offline-safe: a transport failure leaves the
@@ -121,45 +172,82 @@ final class SyncEngine {
     func syncOnce() async -> SyncState {
         guard state != .signedOut else { return state }
         // Re-entrancy guard: the trigger policy (manual + foreground + debounced-dirty)
-        // can fire overlapping syncs, and `syncOnce` suspends at every transport await.
+        // can fire overlapping syncs, and the cycle suspends at every transport await.
         // Coalesce so we never run two cycles against one store concurrently (which would
-        // double-push). Checked synchronously before the first
-        // await, so it is a reliable gate on the MainActor's serial executor. A coalesced
-        // trigger is dropped, NOT queued — but no edit is lost: any change made during an
-        // in-flight sync re-arms its own debounced `noteLocalChange` timer (and foreground/
-        // manual also re-trigger), so it's carried by the next pass, just deferred.
-        guard state != .syncing else { return state }
+        // double-push). Checked synchronously before the first await, so it is a reliable
+        // gate on the MainActor's serial executor. A coalesced trigger is queued, not
+        // dropped: the in-flight cycle's export may predate the edit that fired us, so
+        // the completing pass runs one follow-up (below).
+        guard state != .syncing else {
+            followUpRequested = true
+            return state
+        }
         state = .syncing
-        do {
-            let resolved = try await transport.resolveFile()
-            try await runCycle(fileId: resolved.fileId, attempt: 0)
-            let syncedAt = now()
-            lastSyncedAt = syncedAt
-            state = .synced(syncedAt)
-        } catch let error as SyncTransportError {
-            state = .error(Self.map(error))
-        } catch is SyncDecryptFailure {
-            state = .error(.decryptFailed)
-        } catch {
-            // A local export/merge/encode failure — surface it rather than swallow.
-            state = .error(.driveError(error.localizedDescription))
+        // The pass runs in a tracked child task so `signOut()` can cancel it mid-flight.
+        let pass = Task { await runSyncPass() }
+        inFlightSync = pass
+        await pass.value
+        if inFlightSync == pass { inFlightSync = nil }
+        if followUpRequested {
+            followUpRequested = false
+            if state != .signedOut { return await syncOnce() }
         }
         return state
     }
 
+    /// One tracked pass: runs the cycle and writes the outcome through `finishPass`,
+    /// which fences against a mid-flight `signOut()`.
+    private func runSyncPass() async {
+        do {
+            let resolved = try await transport.resolveFile()
+            try Task.checkCancellation()
+            try await runCycle(fileId: resolved.fileId, attempt: 0)
+            finishPass(.synced(now()))
+        } catch is CancellationError {
+            // `signOut()` cancelled the pass; it already put state/bookkeeping where
+            // they belong — write nothing so the UI stays signed-out.
+        } catch let error as SyncTransportError {
+            finishPass(.error(Self.map(error)))
+        } catch is SyncDecryptFailure {
+            finishPass(.error(.decryptFailed))
+        } catch {
+            // A local export/merge/encode failure — surface it rather than swallow.
+            finishPass(.error(.driveError(error.localizedDescription)))
+        }
+    }
+
+    /// Write a pass's completion state — unless the pass was cancelled or the state
+    /// moved on (sign-out mid-flight), in which case the outcome is stale and dropped.
+    private func finishPass(_ outcome: SyncState) {
+        guard !Task.isCancelled, state == .syncing else { return }
+        if case .synced(let at) = outcome { lastSyncedAt = at }
+        state = outcome
+    }
+
     // MARK: Sign-in gate
 
-    /// Enter the signed-in resting state. C-0 flips `signedOut → idle` so the wired
-    /// transport becomes usable; C-1 replaces this with the real Google sign-in that
-    /// obtains a token before flipping state.
+    /// Enter the signed-in resting state — from a cold `signedOut` OR from
+    /// `.error(.authExpired)`, where the UI renders a "Sign in again" button that must
+    /// actually work. Every other state keeps its meaning. C-0 just flips the state so
+    /// the wired transport becomes usable; C-1 replaces this with the real Google
+    /// sign-in that obtains a token before flipping.
     func signIn() {
-        guard state == .signedOut else { return }
-        state = .idle
+        switch state {
+        case .signedOut, .error(.authExpired):
+            state = .idle
+        default:
+            break
+        }
     }
 
     /// Return to the signed-out state and forget per-session sync bookkeeping so a
-    /// later re-sign-in starts clean (the next sync re-pulls and re-merges).
+    /// later re-sign-in starts clean (the next sync re-pulls and re-merges). Cancels
+    /// the in-flight pass (and any queued follow-up) so a completing cycle can't snap
+    /// the UI back to a signed-in state.
     func signOut() {
+        inFlightSync?.cancel()
+        inFlightSync = nil
+        followUpRequested = false
         pendingChangeTask?.cancel()
         pendingChangeTask = nil
         lastSyncedAt = nil
@@ -181,16 +269,18 @@ final class SyncEngine {
         await syncOnce()
     }
 
-    /// Debounced "after local edits" trigger — any mutation that bumps `modifiedAt`
-    /// calls this; a coalescing timer fires one sync once edits settle, so a burst of
+    /// Debounced "after local edits" trigger — armed automatically by the main
+    /// context's `didSave` observer (see init), so any mutation that bumps `modifiedAt`
+    /// lands here; a coalescing timer fires one sync once edits settle, so a burst of
     /// changes (or keystrokes) produces a single push, not one per change. Same debounce
     /// idiom as the search `task(id:)` guard: a bare `try?` would fall through on
-    /// cancellation and defeat the coalescing.
-    func noteLocalChange(debounce: Duration = .seconds(15)) {
+    /// cancellation and defeat the coalescing. `debounce: nil` uses `changeDebounce`.
+    func noteLocalChange(debounce: Duration? = nil) {
         guard state != .signedOut else { return }
+        let delay = debounce ?? changeDebounce
         pendingChangeTask?.cancel()
         pendingChangeTask = Task { [weak self] in
-            guard (try? await Task.sleep(for: debounce)) != nil else { return }
+            guard (try? await Task.sleep(for: delay)) != nil else { return }
             await self?.syncOnce()
         }
     }
@@ -205,6 +295,9 @@ final class SyncEngine {
     private func runCycle(fileId: String, attempt: Int) async throws {
         // 1–3: pull, then (if the remote isn't empty) decrypt + merge it into the store.
         let pulled = try await transport.pull(fileId: fileId)
+        // Fence (sign-out mid-flight): never merge into — or below, push from — a
+        // store the user just signed out of.
+        try Task.checkCancellation()
         var remoteDigest: Data?
         if let remoteBytes = pulled.bytes {
             let plaintext: Data
@@ -212,6 +305,11 @@ final class SyncEngine {
             catch { throw SyncDecryptFailure() }
             remoteDigest = try Self.contentDigest(of: plaintext)
             let incoming = try DataImporter.decode(plaintext)
+            // The merge's save posts `didSave` like any user edit; flag it so the
+            // change observer doesn't re-arm a sync for the cycle's own write. The
+            // window is purely synchronous (no awaits), so no user edit can land inside.
+            isApplyingRemoteMerge = true
+            defer { isApplyingRemoteMerge = false }
             _ = try DataImporter.merge(incoming, into: modelContext, settings: settings)
         }
 
