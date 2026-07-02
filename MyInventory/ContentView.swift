@@ -602,12 +602,13 @@ struct ContentView: View {
 
     /// After a merge that removed records, drop any selection/navigation that now
     /// points at a tombstoned (or merge-orphaned) context/item — mirroring the
-    /// selection guard `deleteContext` uses, so a removed row never stays on screen.
+    /// selection guard `deleteContext` uses, so a removed row never stays on screen
+    /// and "Check now" can't write into an invisible tombstone.
     private func reconcileSelectionAfterMerge() {
         if case .context(let selected) = sidebarSelection,
            selected.deletedAt != nil {
             sidebarSelection = nil   // onChange(contexts) re-lands on the first live context
-            path = NavigationPath()
+            path = NavigationPath()  // onChange(sidebarSelection) also clears this
         }
         // An open item detail/search sheet whose item (or its ancestor) was tombstoned.
         if let item = searchResultItem,
@@ -615,9 +616,12 @@ struct ContentView: View {
             searchResultItem = nil
         }
         // A pushed ItemDetailView keys off the item's persistentModelID; the soft
-        // delete keeps the model alive so no crash, but the safe reset is to pop to
-        // the list when the selected context went away (handled above). Nothing more
-        // to do for the path here — switching selection already clears it.
+        // delete keeps the model alive (no crash), but its status card + "Check now"
+        // would still act on a tombstoned item. We can't introspect the NavigationPath
+        // to test the top item, and a pushed detail always belongs to the selected
+        // context — so if anything was removed, pop back to the list. The user loses
+        // their drill-down position but never sees a removed item's detail.
+        if !path.isEmpty { path = NavigationPath() }
     }
 
     // MARK: Incoming backup file — flow completion
