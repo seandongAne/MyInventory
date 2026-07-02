@@ -65,6 +65,47 @@ enum WidgetBridge {
             .appendingPathComponent(snapshotFilename)
     }
 
+    /// Pure snapshot builder (no I/O) so the attention/upcoming split is unit-testable.
+    @MainActor
+    static func makeSnapshot(for items: [SupplyItem],
+                             globalLeadTimeDays: Int,
+                             now: Date = .now,
+                             calendar: Calendar = .current) -> Snapshot {
+        var overdue = 0, flagged = 0, neverChecked = 0
+        var upcomingItems: [Snapshot.Upcoming] = []
+        for item in items {
+            let status = item.status(leadTimeDays: globalLeadTimeDays, now: now, calendar: calendar)
+            switch status {
+            case .overdue: overdue += 1
+            case .needsAttention: flagged += 1
+            case .neverChecked: neverChecked += 1
+            default: break
+            }
+            // Only items NOT already in the frozen attention totals may enter
+            // `upcoming`. A `.needsAttention` item can still have a FUTURE due
+            // date (the flag is from its last check, it isn't overdue yet), so
+            // including it would let the widget's `newlyDueCount` add it a
+            // SECOND time once that due date passes — double-counting one item.
+            guard !status.isAttention,
+                  let due = item.nextDueDate(calendar: calendar), due > now else { continue }
+            let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            upcomingItems.append(Snapshot.Upcoming(name: name.isEmpty ? "Untitled item" : name, dueDate: due))
+        }
+
+        let upcoming = upcomingItems
+            .sorted { $0.dueDate < $1.dueDate }
+            // Also bounds how far the widget's local "newly due since
+            // generatedAt" count can climb between app opens — keep it
+            // comfortably above what one row of "next due" display needs.
+            .prefix(10)
+
+        return Snapshot(generatedAt: now,
+                        overdue: overdue,
+                        flagged: flagged,
+                        neverChecked: neverChecked,
+                        upcoming: Array(upcoming))
+    }
+
     /// Builds and writes the snapshot, then asks WidgetKit to refresh timelines.
     @MainActor
     static func writeSnapshot(for items: [SupplyItem],
@@ -73,33 +114,10 @@ enum WidgetBridge {
                               calendar: Calendar = .current) {
         guard let url = snapshotURL else { return }
 
-        var overdue = 0, flagged = 0, neverChecked = 0
-        for item in items {
-            switch item.status(leadTimeDays: globalLeadTimeDays, now: now, calendar: calendar) {
-            case .overdue: overdue += 1
-            case .needsAttention: flagged += 1
-            case .neverChecked: neverChecked += 1
-            default: break
-            }
-        }
-
-        let upcoming = items
-            .compactMap { item -> Snapshot.Upcoming? in
-                guard let due = item.nextDueDate(calendar: calendar), due > now else { return nil }
-                let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                return Snapshot.Upcoming(name: name.isEmpty ? "Untitled item" : name, dueDate: due)
-            }
-            .sorted { $0.dueDate < $1.dueDate }
-            // Also bounds how far the widget's local "newly due since
-            // generatedAt" count can climb between app opens — keep it
-            // comfortably above what one row of "next due" display needs.
-            .prefix(10)
-
-        let snapshot = Snapshot(generatedAt: now,
-                                overdue: overdue,
-                                flagged: flagged,
-                                neverChecked: neverChecked,
-                                upcoming: Array(upcoming))
+        let snapshot = makeSnapshot(for: items,
+                                    globalLeadTimeDays: globalLeadTimeDays,
+                                    now: now,
+                                    calendar: calendar)
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

@@ -10,6 +10,7 @@
 //
 
 import XCTest
+import SwiftData
 @testable import MyInventory
 
 final class WidgetSnapshotTests: XCTestCase {
@@ -89,5 +90,64 @@ final class WidgetSnapshotTests: XCTestCase {
 
     func testTimelineDatesWithNoUpcomingIsJustNow() {
         XCTAssertEqual(snapshot().timelineEntryDates(now: base), [base])
+    }
+
+    // MARK: makeSnapshot — attention/upcoming split (no double-count)
+
+    @MainActor
+    func testFlaggedItemWithFutureDueIsNotAlsoInUpcoming() throws {
+        // A `.needsAttention` item whose next due date is still in the future
+        // must be counted ONCE (in `flagged`) and NOT put in `upcoming` — else
+        // the widget's newlyDueCount would add it a second time when due passes.
+        let container = try ModelContainer(
+            for: SupplyContext.self, SupplyCategory.self, SupplyItem.self, CheckRecord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let cal = Calendar.current
+        let now = base
+
+        // Flagged item due SOON (interval 12mo, last check 11mo ago and flagged
+        // → due ~1 month out, future) so its due passes BEFORE the OK item's —
+        // letting us isolate that the flagged item never contributes a second
+        // time to the count.
+        let flaggedItem = SupplyItem(name: "Flagged Radio", checkIntervalMonths: 12)
+        context.insert(flaggedItem)
+        let flaggedCheck = CheckRecord(date: cal.date(byAdding: .month, value: -11, to: now)!,
+                                       result: .needsAttention)
+        flaggedCheck.item = flaggedItem
+        context.insert(flaggedCheck)
+
+        // A plain OK item due much later (interval 12mo, last check 1mo ago →
+        // due ~11 months out) → the legitimate upcoming entry.
+        let okItem = SupplyItem(name: "Water", checkIntervalMonths: 12)
+        context.insert(okItem)
+        let okCheck = CheckRecord(date: cal.date(byAdding: .month, value: -1, to: now)!, result: .ok)
+        okCheck.item = okItem
+        context.insert(okCheck)
+        try context.save()
+
+        XCTAssertEqual(flaggedItem.status(leadTimeDays: 7, now: now), .needsAttention)
+        XCTAssertEqual(okItem.status(leadTimeDays: 7, now: now), .ok)
+
+        let snap = WidgetBridge.makeSnapshot(for: [flaggedItem, okItem],
+                                             globalLeadTimeDays: 7,
+                                             now: now,
+                                             calendar: cal)
+
+        XCTAssertEqual(snap.flagged, 1)
+        // Only the OK item is upcoming; the flagged item is excluded.
+        XCTAssertEqual(snap.upcoming.map(\.name), ["Water"])
+
+        let flaggedDue = flaggedItem.nextDueDate(calendar: cal)!
+        let waterDue = okItem.nextDueDate(calendar: cal)!
+
+        // Nothing due yet: just the frozen flag.
+        XCTAssertEqual(snap.attentionTotal(asOf: now), 1)
+        // Flagged item's due has passed but it was NOT in `upcoming`, so the
+        // count stays 1 (pre-fix this double-counted to 2).
+        XCTAssertEqual(snap.attentionTotal(asOf: flaggedDue.addingTimeInterval(1)), 1)
+        // The OK item passing its due IS a legitimate new attention → 2.
+        XCTAssertEqual(snap.attentionTotal(asOf: waterDue.addingTimeInterval(1)), 2)
     }
 }
