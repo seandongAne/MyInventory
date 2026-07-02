@@ -26,6 +26,29 @@ struct WidgetSnapshot: Codable {
 
     var attentionTotal: Int { overdue + flagged + neverChecked }
 
+    /// How many `upcoming` due dates have passed since the snapshot was
+    /// written. The widget can't re-derive status without the store, but it
+    /// CAN see a frozen future due date slip past the current timeline entry —
+    /// counting those lets a stale snapshot degrade toward "needs attention"
+    /// instead of asserting "All good" forever.
+    func newlyDueCount(asOf date: Date) -> Int {
+        upcoming.filter { $0.dueDate <= date }.count
+    }
+
+    /// Attention count to display at `date`: the counts frozen at
+    /// `generatedAt` plus everything that has come due since.
+    func attentionTotal(asOf date: Date) -> Int {
+        attentionTotal + newlyDueCount(asOf: date)
+    }
+
+    /// Timeline-entry instants: `now`, plus one entry at each still-future
+    /// due date, ascending — so the widget flips to "needs attention" at the
+    /// moment an item comes due even if WidgetKit grants no timeline reload
+    /// until then.
+    func timelineEntryDates(now: Date) -> [Date] {
+        [now] + upcoming.map(\.dueDate).filter { $0 > now }.sorted()
+    }
+
     static let appGroupID = "group.CharlieW.MyInventory"
     static let filename = "widget-snapshot.json"
 
@@ -65,10 +88,17 @@ struct AttentionProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<AttentionEntry>) -> Void) {
-        // The app pushes a reload on every data change; the hourly refresh just
-        // keeps relative "due" wording from going stale in between.
-        let entry = AttentionEntry(date: .now, snapshot: WidgetSnapshot.load())
-        completion(Timeline(entries: [entry], policy: .after(.now.addingTimeInterval(3600))))
+        // The app pushes a reload on every data change; the hourly refresh
+        // re-reads the file. The snapshot itself is frozen at generatedAt, so
+        // in between we pre-bake one entry at each upcoming due date — the
+        // view counts dues that have passed its entry.date, so the widget
+        // flips to "needs attention" the moment an item comes due instead of
+        // showing "All good" until the next reload.
+        let snapshot = WidgetSnapshot.load()
+        let now = Date()
+        let dates = snapshot?.timelineEntryDates(now: now) ?? [now]
+        let entries = dates.map { AttentionEntry(date: $0, snapshot: snapshot) }
+        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(3600))))
     }
 }
 
@@ -79,23 +109,40 @@ struct AttentionWidgetView: View {
     let entry: AttentionEntry
 
     var body: some View {
+        // No snapshot (widget added before first app launch, file protected
+        // before first unlock, app group misprovisioned, schema mismatch) is
+        // UNKNOWN status, never "All good" — that would be a false safety
+        // signal for an emergency-supplies widget.
         Group {
-            switch family {
-            case .accessoryCircular: circular
-            case .accessoryRectangular: rectangular
-            default: small
+            if let snapshot = entry.snapshot {
+                switch family {
+                case .accessoryCircular: circular(snapshot)
+                case .accessoryRectangular: rectangular(snapshot)
+                default: small(snapshot)
+                }
+            } else {
+                switch family {
+                case .accessoryCircular: circularUnavailable
+                case .accessoryRectangular: rectangularUnavailable
+                default: smallUnavailable
+                }
             }
         }
         .containerBackground(.fill.tertiary, for: .widget)
     }
 
-    private var attentionCount: Int { entry.snapshot?.attentionTotal ?? 0 }
-
-    private var nextUp: WidgetSnapshot.Upcoming? {
-        entry.snapshot?.upcoming.first { $0.dueDate > entry.date }
+    // Dues that passed after the snapshot was written count as attention, so a
+    // stale snapshot degrades toward "needs attention", never a stale "All good".
+    private func attentionCount(_ snapshot: WidgetSnapshot) -> Int {
+        snapshot.attentionTotal(asOf: entry.date)
     }
 
-    @ViewBuilder private var small: some View {
+    private func nextUp(_ snapshot: WidgetSnapshot) -> WidgetSnapshot.Upcoming? {
+        snapshot.upcoming.first { $0.dueDate > entry.date }
+    }
+
+    @ViewBuilder private func small(_ snapshot: WidgetSnapshot) -> some View {
+        let attentionCount = self.attentionCount(snapshot)
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Image(systemName: attentionCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
@@ -111,7 +158,7 @@ struct AttentionWidgetView: View {
             } else {
                 Text("All good")
                     .font(.title3.weight(.semibold))
-                if let nextUp {
+                if let nextUp = nextUp(snapshot) {
                     Text("\(nextUp.name) due \(nextUp.dueDate, format: .relative(presentation: .named))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -126,7 +173,8 @@ struct AttentionWidgetView: View {
         }
     }
 
-    @ViewBuilder private var circular: some View {
+    @ViewBuilder private func circular(_ snapshot: WidgetSnapshot) -> some View {
+        let attentionCount = self.attentionCount(snapshot)
         if attentionCount > 0 {
             VStack(spacing: 0) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -140,7 +188,8 @@ struct AttentionWidgetView: View {
         }
     }
 
-    @ViewBuilder private var rectangular: some View {
+    @ViewBuilder private func rectangular(_ snapshot: WidgetSnapshot) -> some View {
+        let attentionCount = self.attentionCount(snapshot)
         VStack(alignment: .leading, spacing: 1) {
             if attentionCount > 0 {
                 Text("\(attentionCount) need\(attentionCount == 1 ? "s" : "") attention")
@@ -149,12 +198,52 @@ struct AttentionWidgetView: View {
                 Text("Supplies: all good")
                     .font(.headline)
             }
-            if let nextUp {
+            if let nextUp = nextUp(snapshot) {
                 Text("\(nextUp.name) due \(nextUp.dueDate, format: .relative(presentation: .named))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Snapshot-unavailable (neutral, deliberately neither green nor red)
+
+    @ViewBuilder private var smallUnavailable: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Image(systemName: "shippingbox")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            Text("Open MyInventory")
+                .font(.title3.weight(.semibold))
+            Text("No supplies status yet")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder private var circularUnavailable: some View {
+        VStack(spacing: 0) {
+            Image(systemName: "shippingbox")
+                .font(.caption2)
+            Text("?")
+                .font(.title2.weight(.bold))
+        }
+    }
+
+    @ViewBuilder private var rectangularUnavailable: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text("MyInventory")
+                .font(.headline)
+            Text("Open the app to update supplies status")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
