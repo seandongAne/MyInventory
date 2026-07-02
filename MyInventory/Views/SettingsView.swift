@@ -363,45 +363,47 @@ struct SettingsView: View {
     }
 
     /// Reads a user-picked JSON backup and merges it into the store. The merge is
-    /// non-destructive (adds only), so it's safe to run without a wipe warning.
+    /// non-destructive (adds only), so it's safe to run without a wipe warning. The
+    /// read is size-capped and off the main actor (a huge/junk file must not freeze
+    /// the UI); the merge stays on the main actor (it touches the model context).
     private func restore(from result: Result<URL, Error>) {
         switch result {
         case .failure(let error):
             importError = error.localizedDescription
         case .success(let url):
-            // Files picked outside the app's sandbox come security-scoped.
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let data = try Data(contentsOf: url)
-                let export = try DataImporter.decode(data)
-                let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
-                restoreSummary = summary.restoreDescription
-                // New items may be due — refresh reminders + the freshly-exportable backup.
-                rescheduleNotifications()
-                prepareBackup()
-            } catch {
-                importError = error.localizedDescription
+            Task {
+                do {
+                    let data = try await DataImporter.readBackupData(at: url)
+                    let export = try DataImporter.decode(data)
+                    let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
+                    restoreSummary = summary.restoreDescription
+                    // New items may be due — refresh reminders + the freshly-exportable backup.
+                    rescheduleNotifications()
+                    prepareBackup()
+                } catch {
+                    importError = error.localizedDescription
+                }
             }
         }
     }
 
     /// Reads a user-picked `.scbk`, parses the envelope, and (on success) hands it
     /// to the unlock sheet. Decryption itself happens there; here we only validate
-    /// the file is a backup so a wrong pick fails fast with a clear message.
+    /// the file is a backup so a wrong pick fails fast with a clear message. The read
+    /// is size-capped and off the main actor.
     private func handlePickedEncryptedBackup(_ result: Result<URL, Error>) {
         switch result {
         case .failure(let error):
             importError = error.localizedDescription
         case .success(let url):
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let data = try Data(contentsOf: url)
-                let envelope = try BackupCrypto.parseEnvelope(data)
-                pendingRestore = PendingRestore(envelope: envelope)
-            } catch {
-                importError = error.localizedDescription
+            Task {
+                do {
+                    let data = try await DataImporter.readBackupData(at: url)
+                    let envelope = try BackupCrypto.parseEnvelope(data)
+                    pendingRestore = PendingRestore(envelope: envelope)
+                } catch {
+                    importError = error.localizedDescription
+                }
             }
         }
     }
