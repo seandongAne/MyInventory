@@ -225,7 +225,14 @@ Widget (`MyInventoryWidgets/`, separate appex target)
   (systemSmall + accessoryCircular + accessoryRectangular). Renders ONLY the
   `WidgetBridge` JSON snapshot from the app group — it deliberately has no SwiftData
   or model-code dependency. `WidgetSnapshot` must stay in sync with
-  `WidgetBridge.Snapshot`.
+  `WidgetBridge.Snapshot`. A nil snapshot (never written / unreadable / schema
+  mismatch) renders a neutral "Open MyInventory" state in all three families —
+  **never "All good"**, which would be a false safety signal. The snapshot is
+  frozen at `generatedAt`, so the widget degrades toward truth on its own:
+  `upcoming` due dates that pass the current timeline entry are added to the
+  shown attention count (`newlyDueCount(asOf:)`), and the timeline pre-bakes an
+  entry at each future due date so the flip happens at the due instant (the pure
+  helpers are mirrored on both structs and unit-tested via `WidgetBridge.Snapshot`).
 
 ## Invariants & conventions (preserve these)
 

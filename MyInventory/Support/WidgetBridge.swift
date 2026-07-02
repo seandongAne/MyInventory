@@ -34,6 +34,29 @@ enum WidgetBridge {
         let upcoming: [Upcoming]
 
         var attentionTotal: Int { overdue + flagged + neverChecked }
+
+        /// How many `upcoming` due dates have passed since the snapshot was
+        /// written. The widget can't re-derive status without the store, but it
+        /// CAN see a frozen future due date slip past the current timeline
+        /// entry — counting those lets a stale snapshot degrade toward "needs
+        /// attention" instead of asserting "All good" forever.
+        func newlyDueCount(asOf date: Date) -> Int {
+            upcoming.filter { $0.dueDate <= date }.count
+        }
+
+        /// Attention count to display at `date`: the counts frozen at
+        /// `generatedAt` plus everything that has come due since.
+        func attentionTotal(asOf date: Date) -> Int {
+            attentionTotal + newlyDueCount(asOf: date)
+        }
+
+        /// Timeline-entry instants: `now`, plus one entry at each still-future
+        /// due date, ascending — so the widget flips to "needs attention" at
+        /// the moment an item comes due even if WidgetKit grants no timeline
+        /// reload until then.
+        func timelineEntryDates(now: Date) -> [Date] {
+            [now] + upcoming.map(\.dueDate).filter { $0 > now }.sorted()
+        }
     }
 
     static var snapshotURL: URL? {
@@ -67,7 +90,10 @@ enum WidgetBridge {
                 return Snapshot.Upcoming(name: name.isEmpty ? "Untitled item" : name, dueDate: due)
             }
             .sorted { $0.dueDate < $1.dueDate }
-            .prefix(5)
+            // Also bounds how far the widget's local "newly due since
+            // generatedAt" count can climb between app opens — keep it
+            // comfortably above what one row of "next due" display needs.
+            .prefix(10)
 
         let snapshot = Snapshot(generatedAt: now,
                                 overdue: overdue,
