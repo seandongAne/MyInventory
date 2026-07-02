@@ -366,6 +366,28 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(fired, 1, "a merge that changed local data must trigger one refresh")
     }
 
+    /// The refresh must fire even when the pass FAILS after the merge: the pull merged a
+    /// peer's change (the store already saved it), then the push died (e.g. the network
+    /// dropped mid-upload). Gating the hook on a fully-synced pass would leave reminders
+    /// for a just-tombstoned item armed indefinitely — the merge save is hidden from the
+    /// `didSave` observer, and the retry's re-merge of the same remote is a no-op that
+    /// never re-raises the flag.
+    func testMergeRefreshStillFiresWhenPushFails() async throws {
+        let transport = FakeSyncTransport(initialBytes: try remoteBlob(itemName: "Radio", modified: t1))
+        let local = try makeStore()
+        try seedItem(into: local, name: "Water", modified: t1)   // local ≠ remote → push needed
+        transport.failNextPush = .transport("boom")
+        var fired = 0
+        let sut = engine(transport, local, onMergeDidChange: { fired += 1 })
+
+        let state = await sut.syncOnce()
+
+        XCTAssertEqual(state, .error(.driveError("boom")))
+        XCTAssertTrue(try liveItemNames(in: local).contains("Radio"),
+                      "the merge landed (and saved) before the push failed")
+        XCTAssertEqual(fired, 1, "a saved merge must refresh even when the later push fails")
+    }
+
     /// A no-op sync (nothing merged — either an empty remote or an already-converged
     /// one) must NOT fire the hook, so a quiet foreground poll never thrashes reminders.
     func testNoOpSyncDoesNotFireRescheduleHook() async throws {

@@ -108,9 +108,11 @@ final class SyncEngine {
     /// peer's deletion/check lands silently: the ContentView foreground reschedule fires
     /// at scenePhase-active, racing AHEAD of the slower async sync, so a reminder for a
     /// tombstoned item would stay armed until the NEXT foreground. A no-op sync (nothing
-    /// merged) never fires it, so a quiet foreground poll doesn't thrash notifications.
-    /// `@MainActor` like the engine, so it can touch the manager directly. Injected (not
-    /// a singleton reach-in) so engine tests stay pure and can assert it fired.
+    /// merged) never fires it, so a quiet foreground poll doesn't thrash notifications —
+    /// but a pass whose merge SAVED and whose later push failed still does (the store
+    /// changed either way). `@MainActor` like the engine, so it can touch the manager
+    /// directly. Injected (not a singleton reach-in) so engine tests stay pure and can
+    /// assert it fired.
     private let onMergeDidChange: (@MainActor () -> Void)?
 
     /// Set by a cycle whose merge changed the store; consumed by the completing pass to
@@ -219,17 +221,26 @@ final class SyncEngine {
     /// which fences against a mid-flight `signOut()`.
     private func runSyncPass() async {
         mergeDidChangeThisPass = false
+        // Post-merge refresh: reschedule reminders + refresh the widget/badge for a
+        // peer's edit/delete/check we just pulled in. In a `defer` so it fires for ANY
+        // pass whose merge actually SAVED changes — including a pass whose later
+        // export/encrypt/push failed (the store already changed; gating on `.synced`
+        // would leave a reminder for the just-tombstoned item armed indefinitely,
+        // because the merge save is hidden from the `didSave` observer and the retry's
+        // re-merge of the same remote is a no-op that never sets the flag again).
+        // Gated on the change flag so a no-op poll stays silent, and fenced against a
+        // mid-flight `signOut()` (the cancelled pass' outcome is dropped wholesale;
+        // the regular foreground reschedule still covers the store).
+        defer {
+            if mergeDidChangeThisPass, !Task.isCancelled, state != .signedOut {
+                onMergeDidChange?()
+            }
+        }
         do {
             let resolved = try await transport.resolveFile()
             try Task.checkCancellation()
             try await runCycle(fileId: resolved.fileId, attempt: 0)
             finishPass(.synced(now()))
-            // Post-merge refresh: only after a pass that actually completed AND whose
-            // merge changed local data — reschedule reminders + refresh the widget/badge
-            // for a peer's edit/delete/check we just pulled in. Fenced behind
-            // `finishPass` so a sign-out mid-flight (which drops the outcome) doesn't
-            // trigger a refresh, and gated on the change flag so a no-op poll is silent.
-            if mergeDidChangeThisPass, case .synced = state { onMergeDidChange?() }
         } catch is CancellationError {
             // `signOut()` cancelled the pass; it already put state/bookkeeping where
             // they belong — write nothing so the UI stays signed-out.
