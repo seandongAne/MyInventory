@@ -137,6 +137,43 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(remoteNames, ["Water", "Radio"])
     }
 
+    // MARK: Remote regression (a peer overwrote the blob with stale data)
+
+    /// A peer that blindly overwrites the remote with OLDER data (e.g. a Phase-1
+    /// Android importer) must be corrected on the next sync: even though nothing
+    /// changed locally since our last push, the divergent remote gets a corrective
+    /// re-push of the newer local state. (Short-circuiting on a remembered
+    /// last-pushed digest instead of the remote's would skip the push and leave the
+    /// regression standing — a fresh device's first pull would then adopt it.)
+    func testStaleRemoteOverwriteGetsCorrectiveRepush() async throws {
+        let itemUUID = UUID(), contextUUID = UUID(), categoryUUID = UUID()
+        let local = try makeStore()
+        try seedItem(into: local, name: "Water v2", itemUUID: itemUUID,
+                     contextUUID: contextUUID, categoryUUID: categoryUUID, modified: t2)
+        let transport = FakeSyncTransport()
+        let sut = engine(transport, local)
+
+        _ = await sut.syncOnce()
+        XCTAssertEqual(transport.pushCount, 1)
+
+        // The peer regresses the remote to an older snapshot of the SAME entities.
+        let staleStore = try makeStore()
+        try seedItem(into: staleStore, name: "Water v1", itemUUID: itemUUID,
+                     contextUUID: contextUUID, categoryUUID: categoryUUID, modified: t1)
+        transport.overwriteRemote(
+            bytes: try DataExporter.makeExport(from: staleStore, settings: nil, now: t1))
+
+        let state = await sut.syncOnce()
+
+        XCTAssertEqual(state, .synced(fixedNow))
+        XCTAssertEqual(try liveItemNames(in: local), ["Water v2"],
+                       "the stale remote must not clobber newer local state (LWW)")
+        XCTAssertEqual(transport.pushCount, 2, "the divergent remote gets a corrective re-push")
+        let remote = try DataImporter.decode(XCTUnwrap(transport.currentBytes))
+        let remoteNames = Set(remote.contexts.flatMap(\.categories).flatMap(\.items).map(\.name))
+        XCTAssertEqual(remoteNames, ["Water v2"], "the remote is healed back to the newer state")
+    }
+
     // MARK: Conflict recovery
 
     func testConflictOnPushIsResolvedByRepullAndRetry() async throws {

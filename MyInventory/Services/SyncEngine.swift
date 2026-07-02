@@ -98,12 +98,6 @@ final class SyncEngine {
     private let maxConflictRetries: Int
     private let now: () -> Date
 
-    /// SHA-256 of the last content we pushed (with `exportedAt` normalized out — see
-    /// `contentDigest`). Lets a no-op sync skip re-encrypting/uploading. `nil` until the
-    /// first push this run: on a cold start we treat local as possibly-changed and let
-    /// the `expectedVersion` guard + idempotent LWW merge keep that first upload safe.
-    private var lastPushedDigest: Data?
-
     init(transport: SyncTransport,
          cipher: SyncCipher,
          modelContext: ModelContext,
@@ -129,7 +123,7 @@ final class SyncEngine {
         // Re-entrancy guard: the trigger policy (manual + foreground + debounced-dirty)
         // can fire overlapping syncs, and `syncOnce` suspends at every transport await.
         // Coalesce so we never run two cycles against one store concurrently (which would
-        // double-push and race `lastPushedDigest`). Checked synchronously before the first
+        // double-push). Checked synchronously before the first
         // await, so it is a reliable gate on the MainActor's serial executor. A coalesced
         // trigger is dropped, NOT queued — but no edit is lost: any change made during an
         // in-flight sync re-arms its own debounced `noteLocalChange` timer (and foreground/
@@ -169,7 +163,6 @@ final class SyncEngine {
         pendingChangeTask?.cancel()
         pendingChangeTask = nil
         lastSyncedAt = nil
-        lastPushedDigest = nil
         state = .signedOut
     }
 
@@ -226,12 +219,14 @@ final class SyncEngine {
         let localJSON = try DataExporter.makeExport(from: modelContext, settings: settings, now: now())
         let localDigest = try Self.contentDigest(of: localJSON)
 
-        // Short-circuit: nothing to upload if we already match what's on the remote
-        // (converged this pass) or what we last pushed (no local change since).
-        if localDigest == remoteDigest || localDigest == lastPushedDigest {
-            lastPushedDigest = localDigest
-            return
-        }
+        // Short-circuit: nothing to upload if local already matches what's on the
+        // remote (converged this pass). This must compare against the REMOTE digest —
+        // never a remembered "what we last pushed" — so a remote that regressed
+        // out-of-band (e.g. a Phase-1 peer blindly overwriting the blob with stale
+        // data) always gets a corrective re-push. Skipping because local "hasn't
+        // changed since our last push" would leave the stale blob standing until the
+        // next local edit, and a fresh device's first pull would adopt it.
+        if localDigest == remoteDigest { return }
 
         // 5–6: encrypt and conditionally push. A conflict means someone else pushed
         // between our pull and push — re-pull and re-merge, then retry.
@@ -240,7 +235,6 @@ final class SyncEngine {
             _ = try await transport.push(fileId: fileId,
                                          bytes: cipherBytes,
                                          expectedVersion: pulled.version)
-            lastPushedDigest = localDigest
         } catch SyncTransportError.conflict {
             guard attempt < maxConflictRetries else {
                 throw SyncTransportError.transport("Sync kept colliding with another device — try again.")

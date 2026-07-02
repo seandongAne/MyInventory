@@ -158,6 +158,60 @@ final class SettingsSyncTests: XCTestCase {
         XCTAssertEqual(edited.globalLeadTimeDays, 21)
     }
 
+    // MARK: Clock-skew hardening
+
+    /// A peer with a fast clock ships a FUTURE-dated settings blob. After adopting
+    /// it, a later LOCAL edit must survive re-importing the same blob: the edit's
+    /// timestamp bumps monotonically past the adopted instant. (A plain `.now`
+    /// stamp would be older than the adopted future instant, so every subsequent
+    /// merge would silently revert the edit until the wall clock caught up.)
+    func testLocalEditSurvivesReimportOfFutureDatedSettings() throws {
+        let ctx = try makeContext()
+        let store = freshSettings()
+        let future = Date.now.addingTimeInterval(60 * 60 * 24 * 365)
+        let export = settingsExport(lead: 30, value: 2, unit: "years", hour: 8, modified: future)
+        try DataImporter.merge(export, into: ctx, settings: store)
+        XCTAssertEqual(store.globalLeadTimeDays, 30)
+
+        store.globalLeadTimeDays = 10   // local edit while the wall clock is still "behind"
+
+        let summary = try DataImporter.merge(export, into: ctx, settings: store)
+        XCTAssertFalse(summary.settingsUpdated)
+        XCTAssertEqual(store.globalLeadTimeDays, 10,
+                       "re-importing the same future-dated blob must not revert the local edit")
+    }
+
+    // MARK: Range validation on import
+
+    /// Imported settings are untrusted wire data — out-of-range values are clamped
+    /// on adoption. Unclamped, a negative fireHour flows into
+    /// `NotificationManager.resolvedFireDate` and arms past-dated non-repeating
+    /// triggers (every reminder silently never fires), and a negative lead window
+    /// disables due-soon status and lead reminders.
+    func testOutOfRangeImportedSettingsAreClamped() throws {
+        let ctx = try makeContext()
+        let store = freshSettings()
+
+        let export = settingsExport(lead: -30, value: -5, unit: "months", hour: -999, modified: t1)
+        let summary = try DataImporter.merge(export, into: ctx, settings: store)
+
+        XCTAssertTrue(summary.settingsUpdated)
+        XCTAssertEqual(store.globalLeadTimeDays, 0)
+        XCTAssertEqual(store.defaultIntervalValue, 0)
+        XCTAssertEqual(store.notificationFireHour, 0)
+    }
+
+    func testOverRangeImportedFireHourClampsTo23() throws {
+        let ctx = try makeContext()
+        let store = freshSettings()
+
+        try DataImporter.merge(settingsExport(lead: 7, value: 1, unit: "months",
+                                              hour: 999, modified: t1),
+                               into: ctx, settings: store)
+
+        XCTAssertEqual(store.notificationFireHour, 23)
+    }
+
     // MARK: Round-trip
 
     func testRoundTripAppliesToAFreshPeer() throws {

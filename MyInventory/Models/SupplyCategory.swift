@@ -41,14 +41,15 @@ final class SupplyCategory {
     var unwrappedItems: [SupplyItem] { (items ?? []).filter { $0.deletedAt == nil } }
 
     /// Bump the sync timestamp after a local edit (LWW ordering, Phase 2).
-    func touch(now: Date = .now) { modifiedAt = now }
+    /// Monotonic against a future-dated imported `modifiedAt` — see `SupplyItem.touch`.
+    func touch(now: Date = .now) { modifiedAt = max(now, modifiedAt.addingTimeInterval(1)) }
 
     /// Soft-delete this category only (Phase-2 tombstone). Items are NOT cascaded:
     /// the delete-category UX moves items to the Uncategorized bucket first, so a
     /// tombstoned category is always already empty of live items.
     func markDeleted(now: Date = .now) {
         deletedAt = now
-        modifiedAt = now
+        touch(now: now)
     }
 
     /// Name reserved for the orphaned-items fallback bucket.

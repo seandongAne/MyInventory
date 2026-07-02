@@ -119,8 +119,13 @@ final class SupplyItem {
     }
 
     /// Bump the sync timestamp after a local edit so the change wins
-    /// last-write-wins on the next merge (Phase 2).
-    func touch(now: Date = .now) { modifiedAt = now }
+    /// last-write-wins on the next merge (Phase 2). Monotonic: never moves the
+    /// timestamp backwards — after a merge adopts a peer's future-dated
+    /// `modifiedAt` (clock skew), a plain `.now` stamp would be OLDER, so
+    /// re-merging the same data would silently revert this edit until the wall
+    /// clock caught up. The +1s step (not sub-second) keeps the bump visible on
+    /// the whole-second ISO-8601 wire.
+    func touch(now: Date = .now) { modifiedAt = max(now, modifiedAt.addingTimeInterval(1)) }
 
     /// Reparent to a new category, bumping `modifiedAt` so the move wins LWW on the
     /// next cross-device merge. A bare `category =` assignment silently loses the
@@ -133,9 +138,11 @@ final class SupplyItem {
     }
 
     /// Soft-delete this item and cascade to its checks (Phase-2 tombstone).
+    /// `modifiedAt` goes through the monotonic `touch` so a delete of a
+    /// future-dated imported row still wins LWW (no resurrection on re-merge).
     func markDeleted(now: Date = .now) {
         for check in checks ?? [] { check.markDeleted(now: now) }
         deletedAt = now
-        modifiedAt = now
+        touch(now: now)
     }
 }
