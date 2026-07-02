@@ -108,17 +108,34 @@ enum DataImporter {
         try await Task.detached(priority: .userInitiated) { () throws -> Data in
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            // Check declared size first — cheap, and avoids reading a huge file at all.
+            // Fast-path rejection when the size is declared — avoids reading anything.
             if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
                size > maxBackupFileBytes {
                 throw ImportError.tooLarge
             }
-            let data = try Data(contentsOf: url)
-            // Belt-and-suspenders: `fileSizeKey` can be missing (some providers), so
-            // guard the actually-read length too.
-            if data.count > maxBackupFileBytes { throw ImportError.tooLarge }
-            return data
+            // `fileSizeKey` can be MISSING (some file providers / protected files), so
+            // the read itself must be bounded too — never slurp the whole file and
+            // check afterwards, which would allocate an oversized junk file wholesale.
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            return try readCapped(handle, maxBytes: maxBackupFileBytes)
         }.value
+    }
+
+    /// Chunked, capped read: accumulates at most `maxBytes` (plus one chunk of slack)
+    /// and throws `.tooLarge` the moment the cap is exceeded — an unknown-size file
+    /// can never be loaded wholesale into memory. Internal (not private) so the
+    /// fallback path is unit-testable independent of `resourceValues` availability.
+    static func readCapped(_ handle: FileHandle, maxBytes: Int) throws -> Data {
+        let chunkSize = 1 << 20   // 1 MB
+        var data = Data()
+        while data.count <= maxBytes {
+            guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else {
+                return data   // EOF within the cap
+            }
+            data.append(chunk)
+        }
+        throw ImportError.tooLarge
     }
 
     /// Parses backup JSON into the shared `DataExporter.Export` shape, mapping any

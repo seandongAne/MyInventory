@@ -58,4 +58,65 @@ final class BackupFileReadTests: XCTestCase {
         let data = try await DataImporter.readBackupData(at: url)
         XCTAssertEqual(data.count, 4096)
     }
+
+    // MARK: readCapped — the bounded fallback when `fileSizeKey` is unavailable
+
+    // `readCapped` is what protects the app when a file provider doesn't report a
+    // size: it must stop reading (and throw) the moment the cap is exceeded, never
+    // allocate the whole file first. Tested directly with a FileHandle so the
+    // resourceValues fast path can't mask it.
+
+    private func makeHandle(byteCount: Int) throws -> FileHandle {
+        let url = try writeTempFile(byteCount: byteCount)
+        return try FileHandle(forReadingFrom: url)
+    }
+
+    /// A stream past the cap throws `.tooLarge` — the fallback enforces the cap even
+    /// with no size metadata at all.
+    func testCappedReadRejectsStreamPastCap() throws {
+        let handle = try makeHandle(byteCount: 5000)
+        defer { try? handle.close() }
+        XCTAssertThrowsError(try DataImporter.readCapped(handle, maxBytes: 4999)) { error in
+            guard case DataImporter.ImportError.tooLarge = error else {
+                return XCTFail("expected .tooLarge, got \(error)")
+            }
+        }
+    }
+
+    /// A stream exactly at the cap is returned in full (the boundary is inclusive).
+    func testCappedReadAllowsExactCap() throws {
+        let handle = try makeHandle(byteCount: 5000)
+        defer { try? handle.close() }
+        let data = try DataImporter.readCapped(handle, maxBytes: 5000)
+        XCTAssertEqual(data.count, 5000)
+    }
+
+    /// A stream under the cap is returned in full.
+    func testCappedReadReturnsAllBytesUnderCap() throws {
+        let handle = try makeHandle(byteCount: 1234)
+        defer { try? handle.close() }
+        let data = try DataImporter.readCapped(handle, maxBytes: 5000)
+        XCTAssertEqual(data.count, 1234)
+    }
+
+    /// Multi-chunk accumulation preserves content: a file larger than one internal
+    /// chunk (1 MB) reads back byte-identical.
+    func testCappedReadPreservesContentAcrossChunks() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("scbk")
+        tempFiles.append(url)
+        let count = (1 << 20) + 4096
+        var expected = Data(capacity: count)
+        var seed: UInt8 = 7
+        for _ in 0..<count {
+            expected.append(seed)
+            seed = seed &* 31 &+ 11
+        }
+        try expected.write(to: url, options: .atomic)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try DataImporter.readCapped(handle, maxBytes: 2 << 20)
+        XCTAssertEqual(data, expected)
+    }
 }

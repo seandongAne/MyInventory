@@ -71,6 +71,11 @@ struct ContentView: View {
     // True from the moment an incoming file starts being read until its unlock sheet
     // is dismissed. Serializes concurrent `onOpenURL` opens onto the queue.
     @State private var backupRestoreInFlight = false
+    // The first-run Welcome guide was dismissed PROGRAMMATICALLY to let an incoming
+    // backup present its unlock sheet. While set, `afterWelcome` must not mark
+    // onboarding complete (the user neither finished nor skipped it); the guide
+    // re-presents when the restore flow fully ends.
+    @State private var welcomePausedForBackup = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -223,7 +228,7 @@ struct ContentView: View {
         }
         .alert("Backup restored", isPresented: Binding(
             get: { backupRestoreSummary != nil },
-            set: { if !$0 { backupRestoreSummary = nil } }
+            set: { if !$0 { backupRestoreSummary = nil; resumeWelcomeIfPaused() } }
         )) {
             Button("OK", role: .cancel) { backupRestoreSummary = nil }
         } message: {
@@ -231,7 +236,7 @@ struct ContentView: View {
         }
         .alert("Couldn't open this backup", isPresented: Binding(
             get: { backupRestoreError != nil },
-            set: { if !$0 { backupRestoreError = nil } }
+            set: { if !$0 { backupRestoreError = nil; resumeWelcomeIfPaused() } }
         )) {
             Button("OK", role: .cancel) { backupRestoreError = nil }
         } message: {
@@ -408,8 +413,15 @@ struct ContentView: View {
     }
 
     /// After the welcome cards close: run coach-marks if the user tapped
-    /// "Get Started" (not "Skip"); otherwise we're done.
+    /// "Get Started" (not "Skip"); otherwise we're done. A PROGRAMMATIC dismissal
+    /// for an incoming backup (`welcomePausedForBackup`) is neither — the guide was
+    /// interrupted, not completed, so onboarding state must be left untouched and
+    /// the guide re-presented after the restore flow.
     private func afterWelcome() {
+        if welcomePausedForBackup {
+            wantsCoachmarks = false
+            return
+        }
         if wantsCoachmarks {
             runCoachmarks = true
         } else {
@@ -575,7 +587,14 @@ struct ContentView: View {
     /// restore sheet can present cleanly instead of racing/hiding behind them.
     private func dismissSiblingSheets() {
         showingSettings = false
-        showingWelcome = false
+        if showingWelcome {
+            // PAUSE the first-run guide, don't complete it: this programmatic
+            // dismissal still fires the sheet's onDismiss (afterWelcome), which must
+            // not mark onboarding done — the user neither finished nor skipped it.
+            // The guide re-presents when the restore flow ends (resumeWelcomeIfPaused).
+            welcomePausedForBackup = true
+            showingWelcome = false
+        }
         searchResultItem = nil
     }
 
@@ -647,7 +666,25 @@ struct ContentView: View {
             // next presents (SwiftUI dislikes presenting a sheet from within another
             // sheet's dismissal).
             Task { @MainActor in beginBackupRestore(for: next) }
+        } else {
+            // Cancel path (no summary/error alert coming): the interrupted Welcome
+            // guide can come back now. When an alert IS coming, its dismissal calls
+            // resumeWelcomeIfPaused instead (the guard below no-ops here).
+            resumeWelcomeIfPaused()
         }
+    }
+
+    /// Re-presents the first-run Welcome guide once the restore flow that interrupted
+    /// it has FULLY ended: unlock sheet gone, no queued follow-up file, and no
+    /// summary/error alert still up. Until then the pause flag stays set, so
+    /// onboarding is never marked complete behind the user's back.
+    private func resumeWelcomeIfPaused() {
+        guard welcomePausedForBackup,
+              !backupRestoreInFlight, queuedBackupURL == nil,
+              backupRestoreSummary == nil, backupRestoreError == nil else { return }
+        welcomePausedForBackup = false
+        // Defer a turn so the alert/sheet teardown completes before re-presenting.
+        Task { @MainActor in showingWelcome = true }
     }
 
     /// Deletes the file if it lives under this app's `Documents/Inbox`, where iOS drops
