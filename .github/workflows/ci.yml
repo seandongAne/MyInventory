@@ -11,6 +11,11 @@ on:
     paths-ignore:
       - 'docs/**'
 
+# Least-privilege token: CI only reads the repo (checkout); it never writes
+# statuses, comments, or contents via GITHUB_TOKEN.
+permissions:
+  contents: read
+
 # Cancel an in-flight run when a newer commit lands on the same ref —
 # saves the (capped at 5) macOS concurrency budget.
 concurrency:
@@ -25,10 +30,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pin the toolchain so the iOS 26.5 SDK is guaranteed present,
-      # instead of relying on whatever Xcode the runner defaults to.
+      # Select the newest stable Xcode on the runner image. NOTE: `latest-stable`
+      # is a floating selector, NOT a pin — each runner-image update can change
+      # what it resolves to. We rely on the assumption that the newest stable
+      # Xcode's iphonesimulator SDK is >= our iOS 26.0 deployment target (the
+      # runner's *default* Xcode may be older). The action itself IS pinned by
+      # commit SHA (third-party action + our merge discipline trusts CI green).
       - name: Select latest stable Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0 (v1)
         with:
           xcode-version: latest-stable
 
@@ -46,8 +55,9 @@ jobs:
           # selected Xcode: GitHub runners sometimes carry EXTRA, newer iOS runtimes whose
           # simulators xcodebuild can't drive — blindly taking the "newest" iPad landed on
           # one of those and xcodebuild rejected it ("Unable to find a destination", only
-          # placeholders listed). A runtime <= SDK is eligible by construction (and SDK is
-          # >= our 26.5 deployment target). Pick the highest such iPad, preferring 11".
+          # placeholders listed). A runtime <= SDK is eligible by construction (and the
+          # SDK is assumed >= our 26.0 deployment target — see the Xcode-selection note
+          # above). Pick the highest such iPad, preferring 11".
           # Errexit-safe (GitHub runs the step under `bash -e`); jq is preinstalled.
           SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
           echo "iphonesimulator SDK: $SDK"
@@ -66,8 +76,14 @@ jobs:
           DEST_ID=$(pick "iPad Pro 11" || true)
           [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad Air 11" || true)
           [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
-          [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
-          echo "Using simulator: ${DEST_ID:-<none found>}"
+          # No fallback past iPad: the app's layout is iPad-oriented, so a green run
+          # on an iPhone would be a vacuous pass. Fail loudly instead.
+          if [ -z "$DEST_ID" ]; then
+            echo "::error::No iPad simulator with a runtime <= SDK $SDK on this runner image — refusing to fall back to a non-iPad device. Available devices:"
+            xcrun simctl list devices available || true
+            exit 1
+          fi
+          echo "Using simulator: $DEST_ID"
           # Serial, like the UI job: parallel simulator clones intermittently fail to
           # launch the unsigned test runner ("crashed while preparing to run tests" →
           # Exceeded max restart count), which flakes the whole job. Class-parallelism
@@ -110,7 +126,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Select latest stable Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0 (v1)
         with:
           xcode-version: latest-stable
 
@@ -137,8 +153,14 @@ jobs:
           DEST_ID=$(pick "iPad Pro 11" || true)
           [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad Air 11" || true)
           [ -z "$DEST_ID" ] && DEST_ID=$(pick "iPad" || true)
-          [ -z "$DEST_ID" ] && DEST_ID=$(pick "." || true)
-          echo "Using simulator: ${DEST_ID:-<none found>}"
+          # No fallback past iPad: the app's layout is iPad-oriented, so a green run
+          # on an iPhone would be a vacuous pass. Fail loudly instead.
+          if [ -z "$DEST_ID" ]; then
+            echo "::error::No iPad simulator with a runtime <= SDK $SDK on this runner image — refusing to fall back to a non-iPad device. Available devices:"
+            xcrun simctl list devices available || true
+            exit 1
+          fi
+          echo "Using simulator: $DEST_ID"
           xcodebuild test \
             -project MyInventory.xcodeproj \
             -scheme MyInventory \

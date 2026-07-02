@@ -450,15 +450,34 @@ final class NotificationManager {
     }
 
     /// Handles the background "Mark as Checked" action: logs an OK check and
-    /// reschedules. A save failure is surfaced as an immediate notification —
-    /// there is no UI to show an alert in.
+    /// reschedules. There is no UI to show an alert in, so EVERY failure path —
+    /// unconfigured store, fetch error, vanished item, failed save — is surfaced
+    /// as an immediate notification instead of silently dropping the user's tap.
     private func markChecked(itemUUID: UUID) async {
-        guard let container else { return }
+        guard let container else {
+            await postCheckFailure(itemUUID: itemUUID,
+                                   body: "Couldn't open the data store. Open MyInventory and try again.")
+            return
+        }
         let modelContext = container.mainContext
         var descriptor = FetchDescriptor<SupplyItem>(
             predicate: #Predicate { $0.uuid == itemUUID && $0.deletedAt == nil })
         descriptor.fetchLimit = 1
-        guard let item = try? modelContext.fetch(descriptor).first else { return }
+        let fetched: SupplyItem?
+        do {
+            fetched = try modelContext.fetch(descriptor).first
+        } catch {
+            await postCheckFailure(itemUUID: itemUUID,
+                                   body: "Couldn't read the supply. Open MyInventory and try again.")
+            return
+        }
+        guard let item = fetched else {
+            // Legitimately gone (deleted since the reminder was armed) — retrying
+            // can't help, so say so instead of "try again".
+            await postCheckFailure(itemUUID: itemUUID,
+                                   body: "That supply no longer exists, so the check wasn't recorded.")
+            return
+        }
 
         let record = CheckRecord(date: .now, result: .ok)
         record.item = item
@@ -467,20 +486,30 @@ final class NotificationManager {
             try modelContext.save()
         } catch {
             modelContext.rollback()
-            let content = UNMutableNotificationContent()
-            content.title = "Check wasn't saved"
-            content.body = "Couldn't record the check for “\(item.name)”. Open MyInventory and try again."
-            content.sound = .default
-            let request = UNNotificationRequest(
-                identifier: "item-\(itemUUID.uuidString)-savefailure",
-                content: content,
-                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-            )
-            try? await center.add(request)
+            await postCheckFailure(itemUUID: itemUUID,
+                                   body: "Couldn't record the check for “\(item.name)”. Open MyInventory and try again.")
             return
         }
 
         rescheduleAll(in: modelContext, globalLeadTimeDays: settings?.globalLeadTimeDays ?? 7)
+    }
+
+    /// One-shot immediate failure notification for the background action. The id
+    /// deliberately avoids the managed prefixes ("item-"/"due-day-"/"lead-day-",
+    /// same convention as the digest/nudge): the action triggers a reschedule whose
+    /// stale sweep would otherwise remove a managed-prefix request before its
+    /// 1-second trigger fires. Parses to a nil deep link — tapping it just opens the app.
+    private func postCheckFailure(itemUUID: UUID, body: String) async {
+        let content = UNMutableNotificationContent()
+        content.title = "Check wasn't saved"
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "check-failure-\(itemUUID.uuidString)",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        )
+        try? await center.add(request)
     }
 
     // MARK: Helpers

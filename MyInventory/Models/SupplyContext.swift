@@ -52,7 +52,8 @@ final class SupplyContext {
     }
 
     /// Bump the sync timestamp after a local edit (LWW ordering, Phase 2).
-    func touch(now: Date = .now) { modifiedAt = now }
+    /// Monotonic against a future-dated imported `modifiedAt` — see `SupplyItem.touch`.
+    func touch(now: Date = .now) { modifiedAt = max(now, modifiedAt.addingTimeInterval(1)) }
 
     /// Soft-delete this context and cascade tombstones to every category, item,
     /// and check beneath it (Phase-2). Replaces the old hard-delete-items-first
@@ -64,6 +65,6 @@ final class SupplyContext {
             category.markDeleted(now: now)
         }
         deletedAt = now
-        modifiedAt = now
+        touch(now: now)
     }
 }

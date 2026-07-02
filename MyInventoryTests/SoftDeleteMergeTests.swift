@@ -271,6 +271,49 @@ final class SoftDeleteMergeTests: XCTestCase {
         XCTAssertEqual(item.modifiedAt, t2)   // regression guard: a move MUST touch
     }
 
+    // MARK: clock-skew hardening (monotonic touch)
+
+    /// An entity imported with a FUTURE `modifiedAt` (peer clock skew), then edited
+    /// locally: `touch()` must land strictly after the imported instant, or
+    /// re-importing the same blob would silently revert the local edit on every
+    /// merge until the wall clock caught up.
+    func testLocalEditSurvivesReimportOfFutureDatedItem() throws {
+        let store = try makeStore()
+        let cu = UUID(), catu = UUID(), iu = UUID()
+        let future = Date.now.addingTimeInterval(60 * 60 * 24 * 365)
+        let export = singleItemExport(contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                                      itemName: "Imported", itemModified: future)
+        try DataImporter.merge(export, into: store)
+
+        let item = try XCTUnwrap(liveItems(in: store).first)
+        item.name = "Renamed locally"
+        item.touch()
+        try store.save()
+
+        try DataImporter.merge(export, into: store)
+        XCTAssertEqual(try XCTUnwrap(liveItems(in: store).first).name, "Renamed locally",
+                       "re-importing the same future-dated blob must not revert the local edit")
+    }
+
+    /// Same skew scenario for a soft delete: `markDeleted` must also stamp past the
+    /// imported future instant, or re-importing the blob resurrects the tombstone.
+    func testLocalDeleteSurvivesReimportOfFutureDatedItem() throws {
+        let store = try makeStore()
+        let cu = UUID(), catu = UUID(), iu = UUID()
+        let future = Date.now.addingTimeInterval(60 * 60 * 24 * 365)
+        let export = singleItemExport(contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                                      itemName: "Imported", itemModified: future)
+        try DataImporter.merge(export, into: store)
+
+        let item = try XCTUnwrap(liveItems(in: store).first)
+        item.markDeleted()
+        try store.save()
+
+        try DataImporter.merge(export, into: store)
+        XCTAssertTrue(try liveItems(in: store).isEmpty,
+                      "re-importing the same future-dated blob must not resurrect the deleted item")
+    }
+
     // MARK: attention / search orphans (hide items under a tombstoned parent)
 
     /// A live item whose category OR context is tombstoned (a merge orphan — one peer
@@ -297,5 +340,26 @@ final class SoftDeleteMergeTests: XCTestCase {
         context.deletedAt = nil
         item.category = nil                                 // no parent at all — not a tombstone case
         XCTAssertFalse(item.hasTombstonedAncestor)
+    }
+
+    /// The Siri/Shortcuts entity query applies the same rule as search, attention,
+    /// and the notification planners: tombstoned items are excluded by the
+    /// predicate, and a live item under a tombstoned parent (merge orphan) is
+    /// filtered in memory — otherwise "Mark a supply as checked" offers items
+    /// invisible everywhere in-app and logs checks the user can never see.
+    func testIntentItemQueryExcludesTombstonesAndMergeOrphans() throws {
+        let store = try makeStore()
+        let context = SupplyContext(name: "Ctx"); store.insert(context)
+        let liveCat = SupplyCategory(name: "Live"); liveCat.context = context; store.insert(liveCat)
+        let deadCat = SupplyCategory(name: "Dead"); deadCat.context = context; store.insert(deadCat)
+
+        let live = SupplyItem(name: "Water"); live.category = liveCat; store.insert(live)
+        let tombstoned = SupplyItem(name: "Rope"); tombstoned.category = liveCat; store.insert(tombstoned)
+        tombstoned.deletedAt = t2
+        let orphan = SupplyItem(name: "Torch"); orphan.category = deadCat; store.insert(orphan)
+        deadCat.deletedAt = t2
+        try store.save()
+
+        XCTAssertEqual(try SupplyItemEntityQuery.liveItems(in: store).map(\.name), ["Water"])
     }
 }

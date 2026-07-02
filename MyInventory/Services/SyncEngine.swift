@@ -100,12 +100,6 @@ final class SyncEngine {
     private let maxConflictRetries: Int
     private let now: () -> Date
 
-    /// SHA-256 of the last content we pushed (with `exportedAt` normalized out — see
-    /// `contentDigest`). Lets a no-op sync skip re-encrypting/uploading. `nil` until the
-    /// first push this run: on a cold start we treat local as possibly-changed and let
-    /// the `expectedVersion` guard + idempotent LWW merge keep that first upload safe.
-    private var lastPushedDigest: Data?
-
     /// Set when a trigger fires while a cycle is already in flight. That cycle's export
     /// may have been taken BEFORE the edit that fired us, so dropping the trigger would
     /// strand the edit until the next foreground/manual sync — instead the completing
@@ -113,7 +107,7 @@ final class SyncEngine {
     private var followUpRequested = false
 
     /// The in-flight sync pass. `signOut()` cancels it so a mid-flight cycle can never
-    /// write `.synced`/`.error` or repopulate `lastPushedDigest` after the user signed out.
+    /// write a signed-in `.synced`/`.error` state after the user signed out.
     private var inFlightSync: Task<Void, Never>?
 
     /// True only while `runCycle` synchronously applies the remote merge — that
@@ -180,10 +174,10 @@ final class SyncEngine {
         // Re-entrancy guard: the trigger policy (manual + foreground + debounced-dirty)
         // can fire overlapping syncs, and the cycle suspends at every transport await.
         // Coalesce so we never run two cycles against one store concurrently (which would
-        // double-push and race `lastPushedDigest`). Checked synchronously before the first
-        // await, so it is a reliable gate on the MainActor's serial executor. A coalesced
-        // trigger is queued, not dropped: the in-flight cycle's export may predate the
-        // edit that fired us, so the completing pass runs one follow-up (below).
+        // double-push). Checked synchronously before the first await, so it is a reliable
+        // gate on the MainActor's serial executor. A coalesced trigger is queued, not
+        // dropped: the in-flight cycle's export may predate the edit that fired us, so
+        // the completing pass runs one follow-up (below).
         guard state != .syncing else {
             followUpRequested = true
             return state
@@ -257,7 +251,6 @@ final class SyncEngine {
         pendingChangeTask?.cancel()
         pendingChangeTask = nil
         lastSyncedAt = nil
-        lastPushedDigest = nil
         state = .signedOut
     }
 
@@ -324,12 +317,14 @@ final class SyncEngine {
         let localJSON = try DataExporter.makeExport(from: modelContext, settings: settings, now: now())
         let localDigest = try Self.contentDigest(of: localJSON)
 
-        // Short-circuit: nothing to upload if we already match what's on the remote
-        // (converged this pass) or what we last pushed (no local change since).
-        if localDigest == remoteDigest || localDigest == lastPushedDigest {
-            lastPushedDigest = localDigest
-            return
-        }
+        // Short-circuit: nothing to upload if local already matches what's on the
+        // remote (converged this pass). This must compare against the REMOTE digest —
+        // never a remembered "what we last pushed" — so a remote that regressed
+        // out-of-band (e.g. a Phase-1 peer blindly overwriting the blob with stale
+        // data) always gets a corrective re-push. Skipping because local "hasn't
+        // changed since our last push" would leave the stale blob standing until the
+        // next local edit, and a fresh device's first pull would adopt it.
+        if localDigest == remoteDigest { return }
 
         // 5–6: encrypt and conditionally push. A conflict means someone else pushed
         // between our pull and push — re-pull and re-merge, then retry.
@@ -338,10 +333,6 @@ final class SyncEngine {
             _ = try await transport.push(fileId: fileId,
                                          bytes: cipherBytes,
                                          expectedVersion: pulled.version)
-            // Fence: a sign-out during the push already reset `lastPushedDigest`;
-            // don't repopulate per-session bookkeeping from a cancelled pass.
-            try Task.checkCancellation()
-            lastPushedDigest = localDigest
         } catch SyncTransportError.conflict {
             guard attempt < maxConflictRetries else {
                 throw SyncTransportError.transport("Sync kept colliding with another device — try again.")

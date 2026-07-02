@@ -266,11 +266,21 @@ enum BackupCrypto {
                                        wrap: Envelope.Box,
                                        wrapKey: [UInt8],
                                        unlock: Unlock) throws -> String {
+        // Decode + length-check the wrap box BEFORE the AEAD call: these failures are
+        // structural (truncated/mangled file) and secret-independent, so they must
+        // surface as `.corrupted` — remapping them to "wrong passphrase" would send
+        // the user retrying a correct secret against a file that can never open.
+        let wrapCiphertext = try decodeBase64(wrap.ciphertext)
+        let wrapNonce = try decodeBase64(wrap.nonce)
+        guard wrapNonce.count == nonceBytes, wrapCiphertext.count >= tagBytes else {
+            throw CryptoError.corrupted
+        }
         let dataKey: [UInt8]
         do {
-            dataKey = try aeadDecrypt(ciphertext: try decodeBase64(wrap.ciphertext),
-                                      nonce: try decodeBase64(wrap.nonce), key: wrapKey)
-        } catch {
+            dataKey = try aeadDecrypt(ciphertext: wrapCiphertext, nonce: wrapNonce, key: wrapKey)
+        } catch CryptoError.corrupted {
+            // Lengths were validated above, so `.corrupted` here can only be the AEAD
+            // tag failing to authenticate — i.e. the wrong secret.
             throw unlock == .passphrase ? CryptoError.wrongPassphrase : CryptoError.wrongRecoveryKey
         }
         let plaintext: [UInt8]
