@@ -37,6 +37,10 @@ enum DataImporter {
         // live rows tombstoned by a newer incoming delete.
         var updated = 0
         var removed = 0
+        // Entities skipped because their `uuid` couldn't be parsed (a corrupt or
+        // foreign-producer backup). Skipping keeps re-import a no-op — minting a fresh
+        // UUID would re-insert them as NEW rows on every open, duplicating the hierarchy.
+        var skipped = 0
         // The synced settings singleton was replaced by a newer incoming version.
         var settingsUpdated = false
 
@@ -50,11 +54,19 @@ enum DataImporter {
         /// wording never drifts. Built in steps (no nested ternaries in one
         /// interpolation) to keep type-checking fast.
         var restoreDescription: String {
-            guard !isEmpty else {
-                return "Everything in this backup is already here — nothing to add."
-            }
             func phrase(_ count: Int, _ noun: String) -> String {
                 "\(count) \(noun)\(count == 1 ? "" : "s")"
+            }
+            // A skip warning is appended to whatever the merge did — including the
+            // "nothing to add" case, so the user learns why unreadable entries didn't
+            // import (and why re-opening won't help).
+            func withSkipWarning(_ base: String) -> String {
+                guard skipped > 0 else { return base }
+                let entries = skipped == 1 ? "1 unreadable entry" : "\(skipped) unreadable entries"
+                return base + " Skipped \(entries) that couldn't be read."
+            }
+            guard !isEmpty else {
+                return withSkipWarning("Everything in this backup is already here — nothing to add.")
             }
             var message = "Added \(phrase(contextsAdded, "place")), "
                 + "\(phrase(itemsAdded, "item")), and "
@@ -62,19 +74,51 @@ enum DataImporter {
             if updated > 0 { message += " Updated \(phrase(updated, "record"))." }
             if removed > 0 { message += " Removed \(phrase(removed, "record"))." }
             if settingsUpdated { message += " Updated your settings." }
-            return message
+            return withSkipWarning(message)
         }
     }
 
     enum ImportError: LocalizedError {
         case malformed
+        case tooLarge
 
         var errorDescription: String? {
             switch self {
             case .malformed:
                 return "This file isn’t a MyInventory backup, or it’s damaged."
+            case .tooLarge:
+                return "This file is too large to be a Supplies Check backup."
             }
         }
+    }
+
+    /// A generous ceiling on a backup file we're willing to read into memory. A real
+    /// `.scbk`/JSON export of a personal inventory is well under a megabyte; anything
+    /// past this is a renamed or padded junk file, so we reject it up front rather than
+    /// letting `Data(contentsOf:)` block the main actor (or get the app jetsammed) on it.
+    static let maxBackupFileBytes = 32 * 1024 * 1024   // 32 MB
+
+    /// Reads a picked/incoming backup file safely: size-caps it via `resourceValues`
+    /// before reading a single byte, then reads off the main actor (a large file must
+    /// never block the UI). Holds the security scope across the read. `.tooLarge` is
+    /// thrown for anything over `maxBackupFileBytes`.
+    ///
+    /// Not `@MainActor` — call it from a `Task` so the read happens off the main thread.
+    static func readBackupData(at url: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) { () throws -> Data in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            // Check declared size first — cheap, and avoids reading a huge file at all.
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               size > maxBackupFileBytes {
+                throw ImportError.tooLarge
+            }
+            let data = try Data(contentsOf: url)
+            // Belt-and-suspenders: `fileSizeKey` can be missing (some providers), so
+            // guard the actually-read length too.
+            if data.count > maxBackupFileBytes { throw ImportError.tooLarge }
+            return data
+        }.value
     }
 
     /// Parses backup JSON into the shared `DataExporter.Export` shape, mapping any
@@ -161,9 +205,15 @@ enum DataImporter {
 
         for contextDTO in export.contexts {
             // Wire uuids are strings (lowercase); `UUID` matching is value-based,
-            // so case differences across platforms collapse here. A malformed id
-            // gets a fresh UUID so it imports as new rather than aborting.
-            let contextUUID = UUID(uuidString: contextDTO.uuid) ?? UUID()
+            // so case differences across platforms collapse here. A malformed id can't
+            // be matched by value, so minting a fresh one would re-insert the whole
+            // subtree as NEW rows on EVERY open (re-import stops being a no-op). Skip
+            // it — and its children — with a counted warning instead, mirroring how a
+            // check with a bad id already `continue`s below.
+            guard let contextUUID = UUID(uuidString: contextDTO.uuid) else {
+                summary.skipped += 1
+                continue
+            }
             let incomingModified = contextDTO.modifiedAt ?? contextDTO.createdAt
             let context: SupplyContext
             if let existing = contextByUUID[contextUUID] {
@@ -194,7 +244,10 @@ enum DataImporter {
             }
 
             for categoryDTO in contextDTO.categories {
-                let categoryUUID = UUID(uuidString: categoryDTO.uuid) ?? UUID()
+                guard let categoryUUID = UUID(uuidString: categoryDTO.uuid) else {
+                    summary.skipped += 1
+                    continue
+                }
                 let incomingCatModified = categoryDTO.modifiedAt ?? categoryDTO.createdAt
                 let category: SupplyCategory
                 if let existing = categoryByUUID[categoryUUID] {
@@ -227,7 +280,10 @@ enum DataImporter {
                 }
 
                 for itemDTO in categoryDTO.items {
-                    let itemUUID = UUID(uuidString: itemDTO.uuid) ?? UUID()
+                    guard let itemUUID = UUID(uuidString: itemDTO.uuid) else {
+                        summary.skipped += 1
+                        continue
+                    }
                     let incomingItemModified = itemDTO.modifiedAt ?? itemDTO.createdAt
                     let item: SupplyItem
                     if let existing = itemByUUID[itemUUID] {

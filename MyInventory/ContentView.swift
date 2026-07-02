@@ -62,6 +62,15 @@ struct ContentView: View {
     @State private var pendingBackupRestore: PendingRestore?
     @State private var backupRestoreSummary: String?
     @State private var backupRestoreError: String?
+    // The URL currently being restored (kept so its Documents/Inbox copy can be
+    // cleaned up when the flow ends), and a single queued follow-up URL for a second
+    // file opened while a restore is still in flight (re-entrancy guard — a second
+    // sheet mid-decrypt would tear down the first).
+    @State private var activeBackupURL: URL?
+    @State private var queuedBackupURL: URL?
+    // True from the moment an incoming file starts being read until its unlock sheet
+    // is dismissed. Serializes concurrent `onOpenURL` opens onto the queue.
+    @State private var backupRestoreInFlight = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -209,7 +218,7 @@ struct ContentView: View {
         .onOpenURL { url in
             handleIncomingBackupFile(url)
         }
-        .sheet(item: $pendingBackupRestore) { pending in
+        .sheet(item: $pendingBackupRestore, onDismiss: didFinishBackupRestore) { pending in
             EncryptedRestoreSheet(envelope: pending.envelope, onDecrypted: mergeIncomingBackup)
         }
         .alert("Backup restored", isPresented: Binding(
@@ -518,34 +527,135 @@ struct ContentView: View {
 
     // MARK: Incoming backup file ("Open in MyInventory")
 
-    /// Handles a `.scbk` opened from Files or another app's share sheet. Parses the
-    /// envelope and presents the unlock sheet; decryption + merge happen on unlock,
-    /// the same path as Settings → Restore. Non-`.scbk` URLs are ignored.
+    /// Entry point for a `.scbk` opened from Files or another app's share sheet.
+    /// Non-`.scbk` URLs are ignored. Everything else routes through a single
+    /// serialized flow so an incoming file always wins deterministically and a
+    /// second file can't tear down the first:
+    ///  • if a restore is already in flight, the URL is QUEUED (only the most recent
+    ///    is kept) and picked up when the current one finishes;
+    ///  • otherwise any sibling sheet (Settings / Welcome / a search result) is
+    ///    dismissed first, so the unlock prompt isn't lost behind it, and then the
+    ///    file is read + parsed off the main actor.
     private func handleIncomingBackupFile(_ url: URL) {
         guard url.pathExtension.lowercased() == "scbk" else { return }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let data = try Data(contentsOf: url)
-            let envelope = try BackupCrypto.parseEnvelope(data)
-            pendingBackupRestore = PendingRestore(envelope: envelope)
-        } catch {
-            backupRestoreError = error.localizedDescription
+        guard !backupRestoreInFlight else {
+            // A second file arrived mid-restore. Queue it (replacing any earlier
+            // queued one — the newest tap is what the user meant) rather than racing
+            // a second sheet against the live one.
+            queuedBackupURL = url
+            return
+        }
+        beginBackupRestore(for: url)
+    }
+
+    /// Dismisses any sibling sheet, then reads + parses the envelope off the main
+    /// actor and presents the unlock sheet. The incoming file always wins.
+    private func beginBackupRestore(for url: URL) {
+        backupRestoreInFlight = true
+        activeBackupURL = url
+        // Make the incoming file win deterministically: close any sheet presented in
+        // the same context so the unlock sheet (and its later success/error alerts)
+        // aren't lost behind it — including the first-launch Welcome onboarding.
+        dismissSiblingSheets()
+        Task {
+            do {
+                let data = try await DataImporter.readBackupData(at: url)
+                let envelope = try BackupCrypto.parseEnvelope(data)
+                pendingBackupRestore = PendingRestore(envelope: envelope)
+            } catch {
+                // Parse/read failed before any sheet was shown — end the flow here
+                // (surfaces the error alert, cleans up the Inbox copy, dequeues).
+                backupRestoreError = error.localizedDescription
+                finishBackupRestore()
+            }
         }
     }
 
+    /// Closes the sheets that share the root presentation context, so the incoming
+    /// restore sheet can present cleanly instead of racing/hiding behind them.
+    private func dismissSiblingSheets() {
+        showingSettings = false
+        showingWelcome = false
+        searchResultItem = nil
+    }
+
     /// Merges decrypted backup JSON (from the unlock sheet) into the store — the same
-    /// non-destructive LWW merge as Settings → Restore — then reschedules reminders.
+    /// non-destructive LWW merge as Settings → Restore — then reschedules reminders and
+    /// reconciles any selection/navigation pointing at rows the merge just tombstoned.
     private func mergeIncomingBackup(_ plaintext: String) {
         do {
             let export = try DataImporter.decode(Data(plaintext.utf8))
             let summary = try DataImporter.merge(export, into: modelContext, settings: settings)
             backupRestoreSummary = summary.restoreDescription
+            // A merge can soft-delete the currently selected context or the item in an
+            // open detail/search sheet. Clear anything now tombstoned so the UI never
+            // shows a removed row (and "Check now" can't write into a tombstone).
+            if summary.removed > 0 { reconcileSelectionAfterMerge() }
             Haptics.success()
             Task { await refreshNotifications() }
         } catch {
             backupRestoreError = error.localizedDescription
         }
+        // The unlock sheet dismisses itself right after this callback; its onDismiss
+        // (didFinishBackupRestore) handles Inbox cleanup + dequeuing the next file.
+    }
+
+    /// After a merge that removed records, drop any selection/navigation that now
+    /// points at a tombstoned (or merge-orphaned) context/item — mirroring the
+    /// selection guard `deleteContext` uses, so a removed row never stays on screen.
+    private func reconcileSelectionAfterMerge() {
+        if case .context(let selected) = sidebarSelection,
+           selected.deletedAt != nil {
+            sidebarSelection = nil   // onChange(contexts) re-lands on the first live context
+            path = NavigationPath()
+        }
+        // An open item detail/search sheet whose item (or its ancestor) was tombstoned.
+        if let item = searchResultItem,
+           item.deletedAt != nil || item.hasTombstonedAncestor {
+            searchResultItem = nil
+        }
+        // A pushed ItemDetailView keys off the item's persistentModelID; the soft
+        // delete keeps the model alive so no crash, but the safe reset is to pop to
+        // the list when the selected context went away (handled above). Nothing more
+        // to do for the path here — switching selection already clears it.
+    }
+
+    // MARK: Incoming backup file — flow completion
+
+    /// Called when the unlock sheet dismisses (success, failure, or cancel). Runs the
+    /// end-of-flow cleanup and then starts any file that arrived while it was open.
+    private func didFinishBackupRestore() {
+        finishBackupRestore()
+    }
+
+    /// Shared end-of-flow teardown: delete the throwaway Documents/Inbox copy iOS made
+    /// for this open (best-effort, no user-facing error), clear the in-flight flag, and
+    /// dequeue a follow-up file if one is waiting.
+    private func finishBackupRestore() {
+        if let url = activeBackupURL {
+            cleanUpInboxCopy(url)
+            activeBackupURL = nil
+        }
+        backupRestoreInFlight = false
+        if let next = queuedBackupURL {
+            queuedBackupURL = nil
+            // Defer one runloop turn so the previous sheet fully dismisses before the
+            // next presents (SwiftUI dislikes presenting a sheet from within another
+            // sheet's dismissal).
+            Task { @MainActor in beginBackupRestore(for: next) }
+        }
+    }
+
+    /// Deletes the file if it lives under this app's `Documents/Inbox`, where iOS drops
+    /// a copy of every "Open in…" file (we don't declare LSSupportsOpeningDocumentsInPlace,
+    /// so these copies otherwise accumulate forever). Best-effort: a failure is ignored.
+    private func cleanUpInboxCopy(_ url: URL) {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let inbox = documents.appendingPathComponent("Inbox", isDirectory: true)
+        // Only delete files actually inside our Inbox — never a user's in-place file.
+        let fileDir = url.deletingLastPathComponent().standardizedFileURL
+        guard fileDir == inbox.standardizedFileURL else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     // MARK: Notifications
