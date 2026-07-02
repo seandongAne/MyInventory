@@ -11,7 +11,8 @@ in Settings is the interim backup). Originally written on Windows without Xcode;
 now builds/tests/runs on Xcode.
 
 - Bundle id `CharlieW.MyInventory`, scheme `MyInventory` (plus a `MyInventoryWidgets`
-  widget-extension target embedded in the app), deployment target iOS 26.5, Swift 5
+  widget-extension target embedded in the app), deployment target iOS 26.0 (kept ≤ the
+  CI runner's SDK — GitHub free runners cap at Xcode 26.3/SDK 26.2; don't bump it), Swift 5
   language mode. Xcode project uses file-system synchronized groups
   (`PBXFileSystemSynchronizedRootGroup`) → source files are auto-discovered from disk;
   **no per-file editing of `project.pbxproj` is needed** to add/remove files (just
@@ -298,9 +299,15 @@ Widget (`MyInventoryWidgets/`, separate appex target)
 
 - **CI** (`.github/workflows/ci.yml`): on push / PR to `main` (doc-only `docs/**` changes
   skip), a `macos-latest` runner (a standard runner → **free on this public repo**) runs
-  `xcodebuild test` against an iPad Pro 11" simulator whose id is resolved at runtime from
-  `xcodebuild -showdestinations` (scheme-valid destinations only — never a hardcoded device
-  name, which breaks when the runner's Xcode ships a different chip suffix). Separate
+  `xcodebuild test` against an iPad simulator whose udid is resolved at runtime from
+  `xcrun simctl list devices available --json` + jq — highest iOS runtime ≤ the selected
+  Xcode's iphonesimulator SDK, preferring iPad Pro 11", and **failing loudly if no iPad
+  simulator exists** (never a silent iPhone fallback — the layout is iPad-oriented). Never
+  a hardcoded device name (breaks when the runner's Xcode ships a different chip suffix),
+  and NOT `xcodebuild -showdestinations` — on a fresh CI checkout it returned nothing
+  (the scheme's SPM package isn't resolved yet), so don't "restore" it (replaced in PR #3).
+  The third-party `setup-xcode` action is pinned by commit SHA (merge discipline trusts
+  CI green, so a retagged action could forge results). Separate
   `unit-tests` + `ui-tests` jobs; **both run serially** (`-parallel-testing-enabled NO`) —
   parallel simulator clones intermittently fail to launch the unsigned test runner
   ("crashed while preparing to run tests").
