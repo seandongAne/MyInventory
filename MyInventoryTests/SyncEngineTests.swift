@@ -67,10 +67,11 @@ final class SyncEngineTests: XCTestCase {
     private func engine(_ transport: SyncTransport, _ ctx: ModelContext,
                         cipher: SyncCipher = PassthroughCipher(),
                         signedIn: Bool = true,
-                        changeDebounce: Duration = .seconds(15)) -> SyncEngine {
+                        changeDebounce: Duration = .seconds(15),
+                        onMergeDidChange: (@MainActor () -> Void)? = nil) -> SyncEngine {
         SyncEngine(transport: transport, cipher: cipher, modelContext: ctx,
                    settings: nil, signedIn: signedIn, changeDebounce: changeDebounce,
-                   now: { self.fixedNow })
+                   onMergeDidChange: onMergeDidChange, now: { self.fixedNow })
     }
 
     // MARK: First sync
@@ -345,6 +346,98 @@ final class SyncEngineTests: XCTestCase {
 
         XCTAssertEqual(sut.state, .signedOut)
         XCTAssertEqual(transport.resolveCount, 0)
+    }
+
+    // MARK: Post-merge refresh hook (reschedule notifications / widget / badge)
+
+    /// A sync pass whose merge pulled in a peer's item must fire `onMergeDidChange` so
+    /// the app reschedules reminders + refreshes the widget/badge — the same refresh the
+    /// manual restore paths do. (Without it, a peer's deletion/check can leave a stale
+    /// reminder armed until the next foreground.)
+    func testMergeThatChangesDataFiresRescheduleHook() async throws {
+        let transport = FakeSyncTransport(initialBytes: try remoteBlob(itemName: "Radio", modified: t1))
+        let local = try makeStore()
+        var fired = 0
+        let sut = engine(transport, local, onMergeDidChange: { fired += 1 })
+
+        _ = await sut.syncOnce()
+
+        XCTAssertTrue(try liveItemNames(in: local).contains("Radio"))
+        XCTAssertEqual(fired, 1, "a merge that changed local data must trigger one refresh")
+    }
+
+    /// The refresh must fire even when the pass FAILS after the merge: the pull merged a
+    /// peer's change (the store already saved it), then the push died (e.g. the network
+    /// dropped mid-upload). Gating the hook on a fully-synced pass would leave reminders
+    /// for a just-tombstoned item armed indefinitely — the merge save is hidden from the
+    /// `didSave` observer, and the retry's re-merge of the same remote is a no-op that
+    /// never re-raises the flag.
+    func testMergeRefreshStillFiresWhenPushFails() async throws {
+        let transport = FakeSyncTransport(initialBytes: try remoteBlob(itemName: "Radio", modified: t1))
+        let local = try makeStore()
+        try seedItem(into: local, name: "Water", modified: t1)   // local ≠ remote → push needed
+        transport.failNextPush = .transport("boom")
+        var fired = 0
+        let sut = engine(transport, local, onMergeDidChange: { fired += 1 })
+
+        let state = await sut.syncOnce()
+
+        XCTAssertEqual(state, .error(.driveError("boom")))
+        XCTAssertTrue(try liveItemNames(in: local).contains("Radio"),
+                      "the merge landed (and saved) before the push failed")
+        XCTAssertEqual(fired, 1, "a saved merge must refresh even when the later push fails")
+    }
+
+    /// A no-op sync (nothing merged — either an empty remote or an already-converged
+    /// one) must NOT fire the hook, so a quiet foreground poll never thrashes reminders.
+    func testNoOpSyncDoesNotFireRescheduleHook() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()   // empty remote → nothing to merge in
+        var fired = 0
+        let sut = engine(transport, ctx, onMergeDidChange: { fired += 1 })
+
+        _ = await sut.syncOnce()               // first sync only PUSHES; no incoming merge
+        XCTAssertEqual(fired, 0, "a push-only pass merged nothing → no refresh")
+
+        _ = await sut.syncOnce()               // already converged → full no-op
+        XCTAssertEqual(fired, 0, "a converged no-op sync must not refresh")
+    }
+
+    // MARK: Foreground retry after an error bypasses the success-timestamp throttle
+
+    /// The staleness throttle keys on the last SUCCESS. After a success at T and a later
+    /// failed attempt, a foreground within `staleAfter` of T must STILL retry — an error
+    /// means we owe a retry (possibly with unpushed edits), so the throttle is bypassed.
+    func testForegroundRetriesImmediatelyWhenInErrorState() async throws {
+        let ctx = try makeStore()
+        try seedItem(into: ctx, name: "Water", modified: t1)
+        let transport = FakeSyncTransport()
+        var clock = fixedNow
+        let sut = SyncEngine(transport: transport, cipher: PassthroughCipher(),
+                             modelContext: ctx, settings: nil, signedIn: true, now: { clock })
+
+        _ = await sut.syncNow()                        // success → lastSyncedAt = fixedNow
+        XCTAssertEqual(sut.lastSyncedAt, fixedNow)
+
+        // A local edit that never made it to the remote, then a failed attempt.
+        try seedItem(into: ctx, name: "Radio", modified: t2)
+        transport.failNextPull = .offline
+        clock = fixedNow.addingTimeInterval(10)
+        _ = await sut.syncNow()                        // fails → state == .error(.offline)
+        XCTAssertEqual(sut.state, .error(.offline))
+        let pushesBefore = transport.pushCount
+
+        // Back online only 30s after the last SUCCESS — well within staleAfter=120 —
+        // but the error state must force a retry anyway (and push the stranded edit).
+        clock = fixedNow.addingTimeInterval(30)
+        await sut.syncOnForegroundIfStale(staleAfter: 120)
+
+        XCTAssertEqual(sut.state, .synced(clock), "an error state must retry on foreground despite a recent success")
+        XCTAssertGreaterThan(transport.pushCount, pushesBefore, "the retry pushes the stranded local edit")
+        let remote = try DataImporter.decode(XCTUnwrap(transport.currentBytes))
+        let names = Set(remote.contexts.flatMap(\.categories).flatMap(\.items).map(\.name))
+        XCTAssertEqual(names, ["Water", "Radio"])
     }
 
     func testDebouncedDirtyChangesCoalesceToOneSync() async throws {

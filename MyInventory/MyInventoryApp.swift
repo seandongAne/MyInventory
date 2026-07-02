@@ -43,7 +43,19 @@ struct MyInventoryApp: App {
             // Lets background notification actions ("Mark as Checked") reach the
             // store, and scheduling read the configured fire hour.
             notifications.configure(container: container, settings: settings)
-            engine = SyncEngine.localPreview(modelContext: container.mainContext, settings: settings)
+            // A sync pass whose merge pulled in a peer's edit/delete/check must refresh
+            // reminders + the widget snapshot + badge — the same refresh the manual
+            // restore paths do. The debounced dirty trigger only covers LOCAL edits, and
+            // the scenePhase foreground reschedule races ahead of the async sync, so
+            // without this hook a peer's deletion could leave a stale reminder armed
+            // until the next foreground. `rescheduleAll` is @MainActor + fetch-safe.
+            let context = container.mainContext
+            engine = SyncEngine.localPreview(
+                modelContext: context, settings: settings,
+                onMergeDidChange: {
+                    notifications.rescheduleAll(in: context,
+                                                globalLeadTimeDays: settings.globalLeadTimeDays)
+                })
         }
         _settings = State(initialValue: settings)
         _notifications = State(initialValue: notifications)

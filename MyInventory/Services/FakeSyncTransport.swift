@@ -29,12 +29,14 @@ extension SyncEngine {
     @MainActor
     static func localPreview(modelContext: ModelContext,
                              settings: SettingsStore?,
-                             signedIn: Bool = false) -> SyncEngine {
+                             signedIn: Bool = false,
+                             onMergeDidChange: (@MainActor () -> Void)? = nil) -> SyncEngine {
         SyncEngine(transport: FakeSyncTransport(),
                    cipher: PassthroughSyncCipher(),
                    modelContext: modelContext,
                    settings: settings,
-                   signedIn: signedIn)
+                   signedIn: signedIn,
+                   onMergeDidChange: onMergeDidChange)
     }
 }
 

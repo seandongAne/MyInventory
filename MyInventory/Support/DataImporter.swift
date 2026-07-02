@@ -89,6 +89,52 @@ enum DataImporter {
         }
     }
 
+    // MARK: LWW comparison at wire precision (+ deterministic tiebreaker)
+
+    /// The wire (`docs/SCBK1_Format.md` §5) carries `modifiedAt` at WHOLE-SECOND
+    /// ISO-8601 precision — Foundation's `.iso8601` strategy both emits and parses
+    /// without fractional seconds. But a live model's `modifiedAt` is a full-precision
+    /// `Date` (its sub-second fraction comes from `.now` at edit time). Comparing a
+    /// full-precision local Date against the truncated wire value with a naive strict
+    /// `>` diverges permanently: if two devices edit the same row in the same wall-clock
+    /// second, each sees the incoming (truncated) value as strictly OLDER than its own
+    /// (sub-second-heavier) local value, so BOTH keep their own edit forever — no error,
+    /// just a silent split-brain. The fix is to compare at ONE precision: truncate BOTH
+    /// sides to whole seconds before ordering. One-sided (local-only) truncation would
+    /// still be asymmetric, so we truncate both.
+    private static func wireSeconds(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSince1970.rounded(.down))
+    }
+
+    /// The outcome of an LWW comparison for one entity, at wire precision.
+    enum LWWDecision { case keepLocal, adoptIncoming }
+
+    /// Decide whether an incoming version should overwrite the local row, comparing at
+    /// wire (whole-second) precision. When the two truncated timestamps are EQUAL —
+    /// the same-second collision above — a strict `>`/`<` can't order them, so we fall
+    /// back to a deterministic content tiebreaker: adopt incoming iff its canonical
+    /// content string sorts strictly greater than the local one. This is:
+    ///   • symmetric — both peers compute the same `>` on the same two strings, so they
+    ///     pick the SAME winner and converge (instead of each keeping local → split-brain);
+    ///   • idempotent — identical content compares equal → `keepLocal`, so re-importing
+    ///     the same blob is still a no-op (the §6 "equal keeps local" guarantee holds for
+    ///     genuinely-equal rows);
+    ///   • wire-compatible — nothing new is emitted; the tiebreaker is a pure read-side
+    ///     rule over fields already on the wire, so a Phase-1 additive Android peer is
+    ///     unaffected (it never overwrites on equality either, and once one side wins the
+    ///     content converges).
+    /// The tiebreaker only runs on a true tie, so it never overrides a real newer edit.
+    static func decideLWW(incomingModified: Date, localModified: Date,
+                          incomingContent: @autoclosure () -> String,
+                          localContent: @autoclosure () -> String) -> LWWDecision {
+        let incoming = wireSeconds(incomingModified)
+        let local = wireSeconds(localModified)
+        if incoming > local { return .adoptIncoming }
+        if incoming < local { return .keepLocal }
+        // Same wire-second: break the tie on canonical content so peers converge.
+        return incomingContent() > localContent() ? .adoptIncoming : .keepLocal
+    }
+
     /// Merges the backup into the store, matching existing rows by `uuid`. Saves
     /// once at the end (rollback + rethrow on failure, per the store invariant).
     @MainActor
@@ -122,7 +168,11 @@ enum DataImporter {
             let context: SupplyContext
             if let existing = contextByUUID[contextUUID] {
                 context = existing
-                if incomingModified > existing.modifiedAt {
+                let decision = decideLWW(
+                    incomingModified: incomingModified, localModified: existing.modifiedAt,
+                    incomingContent: Self.contextContent(contextDTO),
+                    localContent: Self.contextContent(existing))
+                if decision == .adoptIncoming {
                     let wasLive = existing.deletedAt == nil
                     existing.name = contextDTO.name
                     existing.sortOrder = contextDTO.sortOrder
@@ -149,7 +199,11 @@ enum DataImporter {
                 let category: SupplyCategory
                 if let existing = categoryByUUID[categoryUUID] {
                     category = existing
-                    if incomingCatModified > existing.modifiedAt {
+                    let decision = decideLWW(
+                        incomingModified: incomingCatModified, localModified: existing.modifiedAt,
+                        incomingContent: Self.categoryContent(categoryDTO),
+                        localContent: Self.categoryContent(existing))
+                    if decision == .adoptIncoming {
                         let wasLive = existing.deletedAt == nil
                         existing.name = categoryDTO.name
                         existing.sortOrder = categoryDTO.sortOrder
@@ -178,7 +232,11 @@ enum DataImporter {
                     let item: SupplyItem
                     if let existing = itemByUUID[itemUUID] {
                         item = existing
-                        if incomingItemModified > existing.modifiedAt {
+                        let decision = decideLWW(
+                            incomingModified: incomingItemModified, localModified: existing.modifiedAt,
+                            incomingContent: Self.itemContent(itemDTO),
+                            localContent: Self.itemContent(existing))
+                        if decision == .adoptIncoming {
                             let wasLive = existing.deletedAt == nil
                             existing.name = itemDTO.name
                             existing.intervalValue = itemDTO.intervalValue ?? itemDTO.checkIntervalMonths
@@ -251,11 +309,15 @@ enum DataImporter {
         }
 
         // Settings live in UserDefaults (SettingsStore), not the model context, so
-        // they merge separately — whole-object LWW on the singleton's modifiedAt.
-        // Only a strictly-newer incoming version wins (equal keeps local → re-import
-        // is a no-op). Applied after the entity save so a failed import changes nothing.
+        // they merge separately — whole-object LWW on the singleton's modifiedAt,
+        // compared at wire (whole-second) precision with the same content tiebreaker as
+        // the entities (so two devices editing settings in the same second converge on
+        // one value instead of each keeping its own). Applied after the entity save so a
+        // failed import changes nothing.
         if let store = settings, let dto = export.settings,
-           dto.modifiedAt > store.settingsModifiedAt {
+           decideLWW(incomingModified: dto.modifiedAt, localModified: store.settingsModifiedAt,
+                     incomingContent: Self.settingsContent(dto),
+                     localContent: Self.settingsContent(store)) == .adoptIncoming {
             store.applyMergedSettings(
                 globalLeadTimeDays: dto.globalLeadTimeDays,
                 defaultIntervalValue: dto.defaultIntervalValue ?? 0,
@@ -267,5 +329,79 @@ enum DataImporter {
         }
 
         return summary
+    }
+
+    // MARK: Canonical content strings (same-second tiebreaker input)
+    //
+    // Each builds a stable, delimiter-joined string of the MERGEABLE fields of a row —
+    // exactly the fields the merge would overwrite (never `createdAt`/`uuid`, which are
+    // stable, nor child collections, which merge independently). The delimiter is a
+    // control char that can't appear in user text, so distinct field tuples never
+    // collide. Both the incoming DTO and the local model must map to the SAME string for
+    // equal content, so the two forms are kept field-for-field in sync here. The
+    // tiebreaker only compares these on a same-wire-second collision.
+
+    private static let sep = "\u{1F}"   // ASCII Unit Separator
+
+    private static func contextContent(_ dto: DataExporter.ContextDTO) -> String {
+        [dto.name, String(dto.sortOrder), isoOrEmpty(dto.deletedAt)].joined(separator: sep)
+    }
+    private static func contextContent(_ model: SupplyContext) -> String {
+        [model.name, String(model.sortOrder), isoOrEmpty(model.deletedAt)].joined(separator: sep)
+    }
+
+    private static func categoryContent(_ dto: DataExporter.CategoryDTO) -> String {
+        [dto.name, String(dto.sortOrder), isoOrEmpty(dto.deletedAt)].joined(separator: sep)
+    }
+    private static func categoryContent(_ model: SupplyCategory) -> String {
+        [model.name, String(model.sortOrder), isoOrEmpty(model.deletedAt)].joined(separator: sep)
+    }
+
+    private static func itemContent(_ dto: DataExporter.ItemDTO) -> String {
+        [dto.name,
+         intString(dto.intervalValue ?? dto.checkIntervalMonths),
+         dto.intervalUnit ?? IntervalUnit.months.rawValue,
+         intString(dto.leadTimeDaysOverride),
+         intString(dto.quantity),
+         dto.storageLocation ?? "",
+         dto.notes ?? "",
+         isoOrEmpty(dto.deletedAt)].joined(separator: sep)
+    }
+    private static func itemContent(_ model: SupplyItem) -> String {
+        [model.name,
+         intString(model.intervalValue),
+         model.intervalUnit,
+         intString(model.leadTimeDaysOverride),
+         intString(model.quantity),
+         model.storageLocation ?? "",
+         model.notes ?? "",
+         isoOrEmpty(model.deletedAt)].joined(separator: sep)
+    }
+
+    private static func settingsContent(_ dto: DataExporter.SettingsDTO) -> String {
+        [String(dto.globalLeadTimeDays),
+         intString(dto.defaultIntervalValue),
+         dto.defaultIntervalUnit,
+         String(dto.notificationFireHour)].joined(separator: sep)
+    }
+    private static func settingsContent(_ store: SettingsStore) -> String {
+        [String(store.globalLeadTimeDays),
+         intString(store.defaultIntervalValueOrNil),
+         store.defaultIntervalUnit,
+         String(store.notificationFireHour)].joined(separator: sep)
+    }
+
+    /// An optional-int rendered so `nil` never collides with a real value (e.g. `nil`
+    /// vs `0` must differ — an item with no interval vs a 0-interval item).
+    private static func intString(_ value: Int?) -> String {
+        value.map(String.init) ?? "∅"
+    }
+
+    /// A tombstone instant at the same whole-second precision the tiebreaker orders on,
+    /// so a live-vs-tombstoned same-second collision is decided consistently on both
+    /// peers. Empty for a live row.
+    private static func isoOrEmpty(_ date: Date?) -> String {
+        guard let date else { return "" }
+        return String(Int64(date.timeIntervalSince1970.rounded(.down)))
     }
 }

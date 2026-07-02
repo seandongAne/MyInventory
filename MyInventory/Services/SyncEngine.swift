@@ -100,6 +100,26 @@ final class SyncEngine {
     private let maxConflictRetries: Int
     private let now: () -> Date
 
+    /// Fired once, after a sync pass whose merge actually CHANGED the local store (a
+    /// peer's add/edit/delete/check, or an adopted settings singleton). The app wires
+    /// this to `NotificationManager.rescheduleAll`, which reschedules reminders AND
+    /// refreshes the widget snapshot + badge — the same refresh the manual restore paths
+    /// (Settings → Restore, ContentView.mergeIncomingBackup) already do. Without it a
+    /// peer's deletion/check lands silently: the ContentView foreground reschedule fires
+    /// at scenePhase-active, racing AHEAD of the slower async sync, so a reminder for a
+    /// tombstoned item would stay armed until the NEXT foreground. A no-op sync (nothing
+    /// merged) never fires it, so a quiet foreground poll doesn't thrash notifications —
+    /// but a pass whose merge SAVED and whose later push failed still does (the store
+    /// changed either way). `@MainActor` like the engine, so it can touch the manager
+    /// directly. Injected (not a singleton reach-in) so engine tests stay pure and can
+    /// assert it fired.
+    private let onMergeDidChange: (@MainActor () -> Void)?
+
+    /// Set by a cycle whose merge changed the store; consumed by the completing pass to
+    /// fire `onMergeDidChange` exactly once (a conflict-retry pass may merge more than
+    /// once, but the reschedule only needs to run after the whole pass settles).
+    private var mergeDidChangeThisPass = false
+
     /// Set when a trigger fires while a cycle is already in flight. That cycle's export
     /// may have been taken BEFORE the edit that fired us, so dropping the trigger would
     /// strand the edit until the next foreground/manual sync — instead the completing
@@ -130,6 +150,7 @@ final class SyncEngine {
          signedIn: Bool = true,
          maxConflictRetries: Int = 5,
          changeDebounce: Duration = .seconds(15),
+         onMergeDidChange: (@MainActor () -> Void)? = nil,
          now: @escaping () -> Date = { .now }) {
         self.transport = transport
         self.cipher = cipher
@@ -137,6 +158,7 @@ final class SyncEngine {
         self.settings = settings
         self.maxConflictRetries = maxConflictRetries
         self.changeDebounce = changeDebounce
+        self.onMergeDidChange = onMergeDidChange
         self.now = now
         self.state = signedIn ? .idle : .signedOut
 
@@ -198,6 +220,22 @@ final class SyncEngine {
     /// One tracked pass: runs the cycle and writes the outcome through `finishPass`,
     /// which fences against a mid-flight `signOut()`.
     private func runSyncPass() async {
+        mergeDidChangeThisPass = false
+        // Post-merge refresh: reschedule reminders + refresh the widget/badge for a
+        // peer's edit/delete/check we just pulled in. In a `defer` so it fires for ANY
+        // pass whose merge actually SAVED changes — including a pass whose later
+        // export/encrypt/push failed (the store already changed; gating on `.synced`
+        // would leave a reminder for the just-tombstoned item armed indefinitely,
+        // because the merge save is hidden from the `didSave` observer and the retry's
+        // re-merge of the same remote is a no-op that never sets the flag again).
+        // Gated on the change flag so a no-op poll stays silent, and fenced against a
+        // mid-flight `signOut()` (the cancelled pass' outcome is dropped wholesale;
+        // the regular foreground reschedule still covers the store).
+        defer {
+            if mergeDidChangeThisPass, !Task.isCancelled, state != .signedOut {
+                onMergeDidChange?()
+            }
+        }
         do {
             let resolved = try await transport.resolveFile()
             try Task.checkCancellation()
@@ -263,9 +301,17 @@ final class SyncEngine {
     /// Foreground trigger — sync when the app becomes active, but only if signed-in
     /// and we haven't synced within `staleAfter` (so re-opening a pad pulls the other's
     /// changes without hammering Drive on every quick switch). A no-op while syncing.
+    ///
+    /// The staleness throttle keys on `lastSyncedAt` (last SUCCESS), so a resting
+    /// `.error` state must BYPASS it: after a sync succeeds at T and a later attempt
+    /// fails (e.g. offline), the last success can still be < `staleAfter` old when the
+    /// user comes back online, which would otherwise skip the foreground retry and leave
+    /// unpushed local edits stranded until the throttle expired. An error means "we owe a
+    /// retry", so retry immediately regardless of how recent the last success was.
     func syncOnForegroundIfStale(staleAfter: TimeInterval = 120) async {
         guard state != .signedOut, state != .syncing else { return }
-        if let last = lastSyncedAt, now().timeIntervalSince(last) < staleAfter { return }
+        let inError = { if case .error = state { return true } else { return false } }()
+        if !inError, let last = lastSyncedAt, now().timeIntervalSince(last) < staleAfter { return }
         await syncOnce()
     }
 
@@ -310,7 +356,10 @@ final class SyncEngine {
             // window is purely synchronous (no awaits), so no user edit can land inside.
             isApplyingRemoteMerge = true
             defer { isApplyingRemoteMerge = false }
-            _ = try DataImporter.merge(incoming, into: modelContext, settings: settings)
+            let summary = try DataImporter.merge(incoming, into: modelContext, settings: settings)
+            // Remember for the completing pass's post-merge refresh. Accumulated (|=) so a
+            // conflict-retry pass that merges more than once still reports a change.
+            if !summary.isEmpty { mergeDidChangeThisPass = true }
         }
 
         // 4: export the (possibly merged) local store and take a stable content digest.
