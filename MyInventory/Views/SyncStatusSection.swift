@@ -50,7 +50,10 @@ struct SyncStatusSection: View {
 
         case .synced(let at):
             LabeledContent("Status") {
-                Text("Synced \(Text(at, format: .relative(presentation: .named)))")
+                // `Text(_, style: .relative)` self-updates while the view is on screen;
+                // the `format: .relative(...)` initializer formats ONCE at render, so the
+                // row would freeze at "Synced now" the whole time Settings stays open.
+                (Text("Synced ") + Text(at, style: .relative) + Text(" ago"))
                     .foregroundStyle(.secondary)
             }
             syncNowButton

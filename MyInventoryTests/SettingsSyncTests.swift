@@ -132,6 +132,46 @@ final class SettingsSyncTests: XCTestCase {
         XCTAssertEqual(store.globalLeadTimeDays, 7)
     }
 
+    /// Two devices change settings in the SAME wire-second. Before the truncation +
+    /// tiebreaker fix, each read the incoming (truncated) `modifiedAt` as strictly
+    /// older than its own sub-second-heavier local value, so both kept their own
+    /// settings forever. The compare now truncates both sides and, on a tie, adopts the
+    /// side whose canonical content sorts greater — so the pair converges.
+    func testSameSecondSettingsConvergeViaTiebreaker() throws {
+        let ctx = try makeContext()
+        let store = freshSettings()
+        // Local settings stamped at 1000.900; higher content would keep local, so pick
+        // a LOWER-content local set and a HIGHER-content incoming to prove adoption.
+        store.applyMergedSettings(globalLeadTimeDays: 1, defaultIntervalValue: 1,
+                                  defaultIntervalUnit: "days", notificationFireHour: 1,
+                                  modifiedAt: Date(timeIntervalSince1970: 1_700_000_000.9))
+        // Incoming: same whole second, content "9|…" > "1|…" → adopt.
+        let export = settingsExport(lead: 9, value: 9, unit: "years", hour: 9,
+                                    modified: Date(timeIntervalSince1970: 1_700_000_000))
+        let summary = try DataImporter.merge(export, into: ctx, settings: store)
+
+        XCTAssertTrue(summary.settingsUpdated, "same-second tiebreaker must be able to adopt")
+        XCTAssertEqual(store.globalLeadTimeDays, 9)
+        XCTAssertEqual(store.notificationFireHour, 9)
+    }
+
+    /// The settings tiebreaker keeps re-import a no-op: identical content in the same
+    /// wire-second must not overwrite (idempotency guarantee).
+    func testSameSecondEqualSettingsIsNoOp() throws {
+        let ctx = try makeContext()
+        let store = freshSettings()
+        store.applyMergedSettings(globalLeadTimeDays: 7, defaultIntervalValue: 1,
+                                  defaultIntervalUnit: "months", notificationFireHour: 9,
+                                  modifiedAt: Date(timeIntervalSince1970: 1_700_000_000.5))
+        // Same whole second, identical content → keep local.
+        let export = settingsExport(lead: 7, value: 1, unit: "months", hour: 9,
+                                    modified: Date(timeIntervalSince1970: 1_700_000_000))
+        let summary = try DataImporter.merge(export, into: ctx, settings: store)
+
+        XCTAssertFalse(summary.settingsUpdated, "identical same-second settings must not overwrite")
+        XCTAssertEqual(store.globalLeadTimeDays, 7)
+    }
+
     func testNullDefaultIntervalMapsToZeroOnImport() throws {
         let ctx = try makeContext()
         let store = freshSettings()   // starts at epoch, so incoming wins

@@ -362,4 +362,78 @@ final class SoftDeleteMergeTests: XCTestCase {
 
         XCTAssertEqual(try SupplyItemEntityQuery.liveItems(in: store).map(\.name), ["Water"])
     }
+
+    // MARK: Same-wire-second LWW (truncation + deterministic content tiebreaker)
+
+    /// The wire truncates `modifiedAt` to whole seconds, but a live row's Date carries
+    /// a sub-second fraction. Before the fix, a same-second edit on the two devices
+    /// diverged FOREVER: each read the incoming (truncated) value as strictly older
+    /// than its own sub-second-heavier local value and kept its own edit. The compare
+    /// now truncates BOTH sides, so a genuinely-newer edit within the same second wins.
+    func testSameSecondNewerEditStillWinsAfterTruncation() throws {
+        let store = try makeStore()
+        let cu = UUID(), catu = UUID(), iu = UUID()
+        // Local edit at 1000.900 (heavier sub-second); incoming wire value is 1000.0.
+        let localModified = Date(timeIntervalSince1970: 1_700_000_000.9)
+        try seedLiveItem(into: store, contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                         name: "Local name", modified: localModified)
+        // Incoming: same whole second, but a LATER (lexicographically greater) name, so
+        // the tiebreaker adopts it. (A naive full-precision `>` would have kept local.)
+        let wireSecond = Date(timeIntervalSince1970: 1_700_000_000)
+        let export = singleItemExport(contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                                      itemName: "Remote name", itemModified: wireSecond)
+        let summary = try DataImporter.merge(export, into: store)
+
+        XCTAssertEqual(summary.updated, 1, "the same-second tiebreaker must be able to overwrite")
+        XCTAssertEqual(try liveItems(in: store).first?.name, "Remote name")
+    }
+
+    /// Two devices edit the SAME item in the SAME wire-second with DIFFERENT content.
+    /// Both directions of merge must land on the same winner (the greater canonical
+    /// content), so the pair converges instead of split-braining. Also proves the
+    /// tiebreaker is stable regardless of which side merges first.
+    func testSameSecondConflictConvergesBothDirections() throws {
+        let cu = UUID(), catu = UUID(), iu = UUID()
+        let wireSecond = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // Device A holds "Apple"; device B holds "Zebra" — same uuids, same second.
+        func exportNamed(_ name: String) -> DataExporter.Export {
+            singleItemExport(contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                             itemName: name, itemModified: wireSecond)
+        }
+
+        // A pulls B's blob ("Zebra" > "Apple" → adopt).
+        let a = try makeStore()
+        try seedLiveItem(into: a, contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                         name: "Apple", modified: wireSecond)
+        try DataImporter.merge(exportNamed("Zebra"), into: a)
+
+        // B pulls A's blob ("Apple" < "Zebra" → keep local).
+        let b = try makeStore()
+        try seedLiveItem(into: b, contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                         name: "Zebra", modified: wireSecond)
+        let bSummary = try DataImporter.merge(exportNamed("Apple"), into: b)
+
+        XCTAssertEqual(try liveItems(in: a).first?.name, "Zebra")
+        XCTAssertEqual(try liveItems(in: b).first?.name, "Zebra")
+        XCTAssertEqual(bSummary.updated, 0, "the winning side keeps local — no spurious overwrite")
+    }
+
+    /// The tiebreaker keeps re-import a no-op: after two same-second peers converge on
+    /// identical content, merging the blob again changes nothing (equal content →
+    /// keepLocal), so the §6 "equal keeps local" idempotency guarantee still holds.
+    func testSameSecondEqualContentIsIdempotent() throws {
+        let store = try makeStore()
+        let cu = UUID(), catu = UUID(), iu = UUID()
+        let wireSecond = Date(timeIntervalSince1970: 1_700_000_000)
+        try seedLiveItem(into: store, contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                         name: "Water", modified: wireSecond)
+        // Identical content, identical whole-second → must be a no-op.
+        let export = singleItemExport(contextUUID: cu, categoryUUID: catu, itemUUID: iu,
+                                      itemName: "Water", itemModified: wireSecond)
+        let summary = try DataImporter.merge(export, into: store)
+
+        XCTAssertTrue(summary.isEmpty, "identical same-second content must not overwrite")
+        XCTAssertEqual(try liveItems(in: store).first?.name, "Water")
+    }
 }
