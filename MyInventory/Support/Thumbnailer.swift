@@ -36,4 +36,22 @@ enum Thumbnailer {
         cache.setObject(image, forKey: key)
         return image
     }
+
+    /// Cheap content fingerprint for cache keys. Byte count alone is not enough —
+    /// replacing a photo with a same-length image must produce a new key or rows
+    /// keep serving the stale thumbnail — but this runs per row per render (before
+    /// the cache lookup), so hashing whole multi-hundred-KB images is out. Sampling
+    /// the head/middle/tail catches any realistic re-encode. Hasher's per-launch
+    /// random seed is fine here: the NSCache is purely in-memory.
+    static func contentFingerprint(_ data: Data) -> String {
+        let sample = 64
+        var hasher = Hasher()
+        hasher.combine(data.count)
+        hasher.combine(data.prefix(sample))
+        hasher.combine(data.suffix(sample))
+        if data.count > 2 * sample {
+            hasher.combine(data.dropFirst(data.count / 2).prefix(sample))
+        }
+        return String(hasher.finalize())
+    }
 }

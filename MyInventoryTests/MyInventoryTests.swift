@@ -456,6 +456,9 @@ final class MyInventoryTests: XCTestCase {
         XCTAssertEqual(NotificationManager.deepLink(forNotificationIdentifier: "lead-day-2027-1-7"), .attention)
         XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "something-else"))
         XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "item-not-a-uuid-due"))
+        // Background-action failure notifications use a non-managed prefix (so the
+        // stale sweep can't remove them pre-fire) and deliberately deep-link nowhere.
+        XCTAssertNil(NotificationManager.deepLink(forNotificationIdentifier: "check-failure-\(uuid.uuidString)"))
     }
 
     // MARK: - Export
