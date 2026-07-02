@@ -402,7 +402,15 @@ struct ContentView: View {
         }
         let forced = args.contains("-showOnboarding")
         if forced || (!settings.hasCompletedOnboarding && !isUITesting) {
-            showingWelcome = true
+            if backupRestoreInFlight || pendingBackupRestore != nil {
+                // Cold-start file open: onOpenURL can fire BEFORE this launch task,
+                // so the unlock flow may already be presenting. Don't race it with
+                // the Welcome sheet — mark the guide paused and let the restore
+                // flow re-present it when it fully ends (resumeWelcomeIfPaused).
+                welcomePausedForBackup = true
+            } else {
+                showingWelcome = true
+            }
         }
     }
 
